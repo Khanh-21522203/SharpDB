@@ -2,6 +2,8 @@
 Microsoft Visual Studio Solution File, Format Version 12.00
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpDB", "SharpDB\SharpDB.csproj", "{80BAF1A9-D7CB-4024-88AC-310161403949}"
 EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharpDB.Test", "SharpDB.Test\SharpDB.Test.csproj", "{0D5A40FC-4605-494C-915B-6DCF69208EA5}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -12,5 +14,9 @@ Global
 		{80BAF1A9-D7CB-4024-88AC-310161403949}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{80BAF1A9-D7CB-4024-88AC-310161403949}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{80BAF1A9-D7CB-4024-88AC-310161403949}.Release|Any CPU.Build.0 = Release|Any CPU
+		{0D5A40FC-4605-494C-915B-6DCF69208EA5}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{0D5A40FC-4605-494C-915B-6DCF69208EA5}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{0D5A40FC-4605-494C-915B-6DCF69208EA5}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{0D5A40FC-4605-494C-915B-6DCF69208EA5}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 EndGlobal
