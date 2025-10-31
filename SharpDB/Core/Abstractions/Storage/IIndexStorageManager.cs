@@ -1,6 +1,6 @@
 using SharpDB.DataStructures;
 
-namespace SharpDB.Core.Abstractions;
+namespace SharpDB.Core.Abstractions.Storage;
 
 /// <summary>
 /// Manages persistent storage of B+ Tree nodes.

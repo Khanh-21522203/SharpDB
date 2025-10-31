@@ -1,4 +1,4 @@
-namespace SharpDB.Core.Abstractions;
+namespace SharpDB.Core.Abstractions.Index;
 
 /// <summary>
 /// Factory for creating IIndexBinaryObject instances.

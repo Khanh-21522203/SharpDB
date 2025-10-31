@@ -1,4 +1,4 @@
-using SharpDB.Core.Abstractions;
+using SharpDB.Core.Abstractions.Index;
 using SharpDB.DataStructures;
 
 namespace SharpDB.Index.Node;

@@ -1,7 +1,7 @@
-using SharpDB.Core.Abstractions;
-using SharpDB.Index.Node;
+using SharpDB.Core.Abstractions.Index;
+using SharpDB.DataStructures;
 
-namespace SharpDB.DataStructures;
+namespace SharpDB.Index.Node;
 
 /// <summary>
 /// Internal node in B+ Tree.

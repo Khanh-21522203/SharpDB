@@ -1,4 +1,4 @@
-namespace SharpDB.Core.Abstractions;
+namespace SharpDB.Core.Abstractions.Index;
 
 /// <summary>
 /// Represents a binary-serializable object for B+ Tree storage.
