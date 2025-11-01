@@ -23,13 +23,13 @@ public class CollectionDeleteOperation<TKey>(
             WasDeleted = false;
             return; // Already deleted or never existed
         }
-        
+
         // Remove from storage
         await dataSession.DeleteAsync(pointer);
-        
+
         // Remove from primary index
         await primaryIndex.RemoveAsync(primaryKey);
-        
+
         WasDeleted = true;
     }
 }

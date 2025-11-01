@@ -5,15 +5,15 @@ namespace SharpDB.Engine.Concurrency;
 public class LockEntry
 {
     private readonly SemaphoreSlim _exclusiveLock = new(1, 1);
-    private readonly SemaphoreSlim _sharedLock = new(int.MaxValue, int.MaxValue);
-    private int _sharedCount = 0;
-    private TransactionId? _exclusiveHolder = null;
     private readonly HashSet<TransactionId> _sharedHolders = new();
-    
+    private readonly SemaphoreSlim _sharedLock = new(int.MaxValue, int.MaxValue);
+    private TransactionId? _exclusiveHolder;
+    private int _sharedCount;
+
     public async Task AcquireSharedAsync(TransactionId txnId, CancellationToken ct)
     {
         await _sharedLock.WaitAsync(ct);
-        
+
         if (_exclusiveHolder != null && _exclusiveHolder != txnId)
         {
             _sharedLock.Release();
@@ -22,15 +22,15 @@ public class LockEntry
             await AcquireSharedAsync(txnId, ct);
             return;
         }
-        
+
         _sharedHolders.Add(txnId);
         Interlocked.Increment(ref _sharedCount);
     }
-    
+
     public async Task AcquireExclusiveAsync(TransactionId txnId, CancellationToken ct)
     {
         await _exclusiveLock.WaitAsync(ct);
-        
+
         // Wait for all shared locks to release
         while (_sharedCount > 0 && !_sharedHolders.Contains(txnId))
         {
@@ -38,10 +38,10 @@ public class LockEntry
             await Task.Delay(10, ct);
             await _exclusiveLock.WaitAsync(ct);
         }
-        
+
         _exclusiveHolder = txnId;
     }
-    
+
     public void Release(TransactionId txnId)
     {
         if (_exclusiveHolder == txnId)

@@ -26,7 +26,7 @@ public class CollectionSelectOperation<T, TKey>(
             Result = null;
             return;
         }
-        
+
         // Read data from storage using pointer
         var dbObject = await dataSession.SelectAsync(pointer);
         if (dbObject == null)
@@ -34,7 +34,7 @@ public class CollectionSelectOperation<T, TKey>(
             Result = null;
             return;
         }
-        
+
         // Deserialize data to object
         Result = serializer.Deserialize<T>(dbObject.Data);
     }

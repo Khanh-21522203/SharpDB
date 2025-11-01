@@ -20,15 +20,15 @@ public class CollectionUpdateOperation<T, TKey>(
     {
         // Extract primary key from record
         var primaryKey = keyExtractor(record);
-        
+
         // Find existing record pointer
         var pointer = await primaryIndex.GetAsync(primaryKey);
         if (pointer == null)
             throw new InvalidOperationException($"Record with key {primaryKey} not found");
-        
+
         // Serialize updated data
         var data = serializer.Serialize(record);
-        
+
         // Update storage at existing pointer location
         await dataSession.UpdateAsync(pointer, data);
     }

@@ -9,13 +9,13 @@ public class EngineConfig
     public int BTreeDegree { get; set; } = 128;
     public bool UseBufferedIO { get; set; } = true;
     public IsolationLevel DefaultIsolationLevel { get; set; } = IsolationLevel.ReadCommitted;
-    
+
     public StorageConfig Storage { get; set; } = new();
     public IndexConfig Index { get; set; } = new();
     public CacheConfig Cache { get; set; } = new();
-    
+
     public static EngineConfig Default => new();
-    
+
     public static EngineConfig HighPerformance => new()
     {
         PageSize = 8192,
@@ -28,7 +28,7 @@ public class EngineConfig
             IndexCacheSize = 5000
         }
     };
-    
+
     public static EngineConfig LowMemory => new()
     {
         PageSize = 2048,

@@ -1,27 +1,27 @@
 namespace SharpDB.Core.Abstractions.Storage;
 
 /// <summary>
-/// Pool of file handles for efficient I/O.
+///     Pool of file handles for efficient I/O.
 /// </summary>
 public interface IFileHandlerPool : IDisposable
 {
     /// <summary>
-    /// Get or create file handle.
+    ///     Get or create file handle.
     /// </summary>
     Task<FileStream> GetHandleAsync(int collectionId, string filePath);
-    
+
     /// <summary>
-    /// Release handle for collection.
+    ///     Release handle for collection.
     /// </summary>
     Task ReleaseHandleAsync(int collectionId);
-    
+
     /// <summary>
-    /// Close handle for collection (alias for ReleaseHandleAsync).
+    ///     Close handle for collection (alias for ReleaseHandleAsync).
     /// </summary>
     Task CloseAsync(int collectionId);
-    
+
     /// <summary>
-    /// Flush all handles.
+    ///     Flush all handles.
     /// </summary>
     Task FlushAllAsync();
 }

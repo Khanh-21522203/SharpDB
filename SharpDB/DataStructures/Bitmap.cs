@@ -1,9 +1,7 @@
-using System.Text;
-
 namespace SharpDB.DataStructures;
 
 /// <summary>
-/// Efficient bit array for tracking null values.
+///     Efficient bit array for tracking null values.
 /// </summary>
 public class Bitmap(int capacity)
 {
@@ -14,23 +12,23 @@ public class Bitmap(int capacity)
     {
         if (index < 0 || index >= Capacity)
             throw new ArgumentOutOfRangeException(nameof(index));
-        
+
         _bits[index / 8] |= (byte)(1 << (index % 8));
     }
-    
+
     public void Clear(int index)
     {
         if (index < 0 || index >= Capacity)
             throw new ArgumentOutOfRangeException(nameof(index));
-        
+
         _bits[index / 8] &= (byte)~(1 << (index % 8));
     }
-    
+
     public bool IsSet(int index)
     {
         if (index < 0 || index >= Capacity)
             return false;
-        
+
         return (_bits[index / 8] & (1 << (index % 8))) != 0;
     }
 }

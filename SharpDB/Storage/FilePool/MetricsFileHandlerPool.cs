@@ -10,29 +10,29 @@ public class MetricsFileHandlerPool(
     int maxConcurrentHandles = 100)
     : FileHandlerPool(logger, maxConcurrentHandles)
 {
-    private long _totalRequests = totalRequests;
     private long _cacheHits = cacheHits;
     private long _cacheMisses = cacheMisses;
+    private long _totalRequests = totalRequests;
 
-    public double CacheHitRate => _totalRequests > 0 
-        ? (double)_cacheHits / _totalRequests 
+    public double CacheHitRate => _totalRequests > 0
+        ? (double)_cacheHits / _totalRequests
         : 0;
-    
+
     public new async Task<FileStream> GetHandleAsync(int collectionId, string filePath)
     {
         Interlocked.Increment(ref _totalRequests);
-        
-        bool wasInCache = _handles.ContainsKey(collectionId);
+
+        var wasInCache = _handles.ContainsKey(collectionId);
         var handle = await base.GetHandleAsync(collectionId, filePath);
-        
+
         if (wasInCache)
             Interlocked.Increment(ref _cacheHits);
         else
             Interlocked.Increment(ref _cacheMisses);
-        
+
         return handle;
     }
-    
+
     public FileHandlerPoolStatistics GetStatistics()
     {
         return new FileHandlerPoolStatistics

@@ -8,30 +8,44 @@ public class ClusterNodeFactory<TK> : INodeFactory<TK, Pointer>
     where TK : IComparable<TK>
 {
     private readonly BPlusTreeNodeFactory<TK, Pointer> _innerFactory;
-    
+
     public ClusterNodeFactory(ISerializer<TK> keySerializer, int degree)
     {
         var pointerSerializer = new PointerSerializer();
         _innerFactory = new BPlusTreeNodeFactory<TK, Pointer>(
-            keySerializer, 
-            pointerSerializer, 
+            keySerializer,
+            pointerSerializer,
             degree
         );
     }
-    
-    public LeafNode<TK, Pointer> CreateLeafNode() => _innerFactory.CreateLeafNode();
-    
-    public InternalNode<TK> CreateInternalNode() => _innerFactory.CreateInternalNode();
-    
-    public TreeNode<TK> DeserializeNode(byte[] data) => _innerFactory.DeserializeNode(data);
+
+    public LeafNode<TK, Pointer> CreateLeafNode()
+    {
+        return _innerFactory.CreateLeafNode();
+    }
+
+    public InternalNode<TK> CreateInternalNode()
+    {
+        return _innerFactory.CreateInternalNode();
+    }
+
+    public TreeNode<TK> DeserializeNode(byte[] data)
+    {
+        return _innerFactory.DeserializeNode(data);
+    }
 }
 
 public class PointerSerializer : ISerializer<Pointer>
 {
     public int Size => Pointer.ByteSize;
-    
-    public byte[] Serialize(Pointer obj) => obj.ToBytes();
-    
-    public Pointer Deserialize(byte[] bytes, int offset = 0) => 
-        Pointer.FromBytes(bytes, offset);
+
+    public byte[] Serialize(Pointer obj)
+    {
+        return obj.ToBytes();
+    }
+
+    public Pointer Deserialize(byte[] bytes, int offset = 0)
+    {
+        return Pointer.FromBytes(bytes, offset);
+    }
 }

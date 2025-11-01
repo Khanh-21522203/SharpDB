@@ -5,25 +5,39 @@ public record struct Pointer(byte Type, long Position, int Chunk) : IComparable<
     public const byte TypeData = 0x01;
     public const byte TypeNode = 0x02;
     public const int ByteSize = 1 + sizeof(long) + sizeof(int); // 13 bytes
-    
+
     public byte Type { get; init; } = Type;
     public long Position { get; init; } = Position;
     public int Chunk { get; init; } = Chunk;
-
-    public bool IsDataPointer() => Type == TypeData;
-    public bool IsNodePointer() => Type == TypeNode;
-    
-    public static Pointer Empty() => new(0x00, 0, 0);
-    public bool IsEmpty() => Type == 0x00;
 
     public int CompareTo(Pointer other)
     {
         var chunkComp = Chunk.CompareTo(other.Chunk);
         if (chunkComp != 0) return chunkComp;
-        
+
         return Position.CompareTo(other.Position);
     }
-    
+
+    public bool IsDataPointer()
+    {
+        return Type == TypeData;
+    }
+
+    public bool IsNodePointer()
+    {
+        return Type == TypeNode;
+    }
+
+    public static Pointer Empty()
+    {
+        return new Pointer(0x00, 0, 0);
+    }
+
+    public bool IsEmpty()
+    {
+        return Type == 0x00;
+    }
+
     public byte[] ToBytes()
     {
         var buffer = new byte[ByteSize];
@@ -32,14 +46,14 @@ public record struct Pointer(byte Type, long Position, int Chunk) : IComparable<
         BitConverter.GetBytes(Chunk).CopyTo(buffer, 9);
         return buffer;
     }
-    
+
     public void FillBytes(byte[] target, int offset)
     {
         target[offset] = Type;
         BitConverter.GetBytes(Position).CopyTo(target, offset + 1);
         BitConverter.GetBytes(Chunk).CopyTo(target, offset + 9);
     }
-    
+
     public static Pointer FromBytes(byte[] bytes, int offset = 0)
     {
         var type = bytes[offset];

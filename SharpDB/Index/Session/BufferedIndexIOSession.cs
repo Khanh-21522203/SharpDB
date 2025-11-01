@@ -20,27 +20,27 @@ public class BufferedIndexIOSession<TK>(
     {
         if (_cache.TryGetValue(pointer, out var cached))
             return cached;
-        
+
         var nodeData = await storage.ReadNodeAsync(indexId, pointer);
         var node = nodeFactory.DeserializeNode(nodeData.Bytes);
         node.Pointer = pointer;
-        
+
         _cache[pointer] = node;
         return node;
     }
-    
+
     public Task<Pointer> WriteAsync(TreeNode<TK> node)
     {
         _dirtyNodes.Add(node);
         return Task.FromResult(node.Pointer);
     }
-    
+
     public async Task FlushAsync()
     {
         foreach (var node in _dirtyNodes)
         {
             var bytes = node.ToBytes();
-            
+
             if (node.Pointer!.Position == -1)
             {
                 var result = await storage.WriteNewNodeAsync(indexId, bytes);
@@ -50,13 +50,13 @@ public class BufferedIndexIOSession<TK>(
             {
                 await storage.UpdateNodeAsync(indexId, node.Pointer, bytes);
             }
-            
+
             node.ClearModified();
         }
-        
+
         _dirtyNodes.Clear();
     }
-    
+
     public void Dispose()
     {
         FlushAsync().Wait();

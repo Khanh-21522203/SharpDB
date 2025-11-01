@@ -12,26 +12,29 @@ public class NodeFactory<TK, TV>(
     public TreeNode<TK> FromBytes(byte[] bytes)
     {
         var isLeaf = (bytes[0] & TreeNode<TK>.TypeLeafBit) != 0;
-        
-        if (isLeaf)
-        {
-            return new LeafNode<TK, TV>(bytes, degree, keyFactory, valueFactory);
-        }
-        else
-        {
-            return new InternalNode<TK>(bytes, keyFactory, degree);
-        }
+
+        if (isLeaf) return new LeafNode<TK, TV>(bytes, degree, keyFactory, valueFactory);
+
+        return new InternalNode<TK>(bytes, keyFactory, degree);
     }
-    
+
     public LeafNode<TK, TV> CreateLeaf()
-        => new LeafNode<TK, TV>(degree, keyFactory, valueFactory);
+    {
+        return new LeafNode<TK, TV>(degree, keyFactory, valueFactory);
+    }
 
     public InternalNode<TK> CreateInternal()
-        => new InternalNode<TK>(keyFactory, degree);
-    
+    {
+        return new InternalNode<TK>(keyFactory, degree);
+    }
+
     public int GetLeafNodeSize()
-        => 1 + (degree - 1) * (keyFactory.Size + valueFactory.Size) + 2 * Pointer.ByteSize;
-    
-    public int GetInternalNodeSize() 
-        => 1 + degree * Pointer.ByteSize + (degree - 1) * keyFactory.Size;
+    {
+        return 1 + (degree - 1) * (keyFactory.Size + valueFactory.Size) + 2 * Pointer.ByteSize;
+    }
+
+    public int GetInternalNodeSize()
+    {
+        return 1 + degree * Pointer.ByteSize + (degree - 1) * keyFactory.Size;
+    }
 }

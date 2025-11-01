@@ -15,4 +15,5 @@ public enum LockMode
 }
 
 public record ResourceId(string Type, object Id);
+
 public record TransactionId(long Id);

@@ -22,30 +22,30 @@ public class Transaction(
         // Acquire shared lock
         var resourceId = new ResourceId("record", pointer.ToString());
         var txnId = new TransactionId(TransactionId);
-        
+
         await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
-        
+
         // Read version
         var version = await versionManager.ReadAsync(pointer, StartTimestamp);
         if (version == null)
             return null;
-        
+
         return serializer.Deserialize<T>(version.Data);
     }
-    
+
     public async Task<Pointer> WriteAsync<T>(Pointer? pointer, T data) where T : class
     {
         var resourceId = new ResourceId("record", pointer?.ToString() ?? "new");
         var txnId = new TransactionId(TransactionId);
-        
+
         // Acquire exclusive lock
         await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Exclusive, TimeSpan.FromSeconds(10));
-        
+
         // Create new version
         var bytes = serializer.Serialize(data);
         return await versionManager.WriteAsync(pointer, bytes, StartTimestamp, TransactionId);
     }
-    
+
     public void Dispose()
     {
         // Locks released on commit/rollback

@@ -1,7 +1,7 @@
 namespace SharpDB.DataStructures;
 
 /// <summary>
-/// Key-value pair used in B+ Tree leaf nodes.
+///     Key-value pair used in B+ Tree leaf nodes.
 /// </summary>
 public record struct KeyValue<TK, TV>(TK Key, TV Value) : IComparable<KeyValue<TK, TV>>
     where TK : IComparable<TK>
@@ -10,12 +10,15 @@ public record struct KeyValue<TK, TV>(TK Key, TV Value) : IComparable<KeyValue<T
     {
         return Key.CompareTo(other.Key);
     }
-    
+
     public void Deconstruct(out TK key, out TV value)
     {
         key = Key;
         value = Value;
     }
-    
-    public override string ToString() => $"({Key}, {Value})";
+
+    public override string ToString()
+    {
+        return $"({Key}, {Value})";
+    }
 }

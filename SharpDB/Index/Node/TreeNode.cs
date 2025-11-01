@@ -14,8 +14,8 @@ namespace SharpDB.Index.Node;
 //             └───────── Root bit (0x04)
 
 /// <summary>
-/// Abstract base class for B+ tree nodes.
-/// Stores node data in fixed-size byte array for disk persistence.
+///     Abstract base class for B+ tree nodes.
+///     Stores node data in fixed-size byte array for disk persistence.
 /// </summary>
 public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, int degree)
     where TK : IComparable<TK>
@@ -23,31 +23,19 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
     public const byte TypeLeafBit = 0x02;
     public const byte TypeInternalBit = 0x01;
     public const byte RootBit = 0x04;
-    
+
     protected readonly byte[] _data = data;
-    protected readonly ISerializer<TK> _keySerializer = keySerializer;
     protected readonly int _degree = degree;
-    private bool _modified;
-    
+    protected readonly ISerializer<TK> _keySerializer = keySerializer;
+
     //TODO: Need to consider as Pointer?
     public Pointer Pointer { get; set; }
-    public bool Modified => _modified;
+    public bool Modified { get; private set; }
+
     public abstract bool IsLeaf { get; }
 
     public bool IsRoot => (_data[0] & RootBit) != 0;
 
-    public void SetAsRoot()
-    {
-        _data[0] |= RootBit;
-        MarkModified();
-    }
-    
-    public void UnsetAsRoot()
-    {
-        _data[0] &= unchecked((byte)~RootBit);
-        MarkModified();
-    }
-    
     public int KeyCount
     {
         get => BitConverter.ToInt32(_data, 1);
@@ -57,34 +45,49 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
             MarkModified();
         }
     }
-    
-    public byte[] ToBytes() => _data;
-    
+
+    public void SetAsRoot()
+    {
+        _data[0] |= RootBit;
+        MarkModified();
+    }
+
+    public void UnsetAsRoot()
+    {
+        _data[0] &= unchecked((byte)~RootBit);
+        MarkModified();
+    }
+
+    public byte[] ToBytes()
+    {
+        return _data;
+    }
+
     protected void MarkModified()
     {
-        _modified = true;
+        Modified = true;
     }
-    
+
     public void ClearModified()
     {
-        _modified = false;
+        Modified = false;
     }
-    
+
     protected void SetKey(int index, TK key, int offset)
     {
         if (index < 0 || index >= _degree)
             throw new ArgumentOutOfRangeException(nameof(index));
-        
+
         var keyBytes = _keySerializer.Serialize(key);
         Array.Copy(keyBytes, 0, _data, offset, keyBytes.Length);
         MarkModified();
     }
-    
+
     protected TK GetKey(int index, int offset)
     {
         if (index < 0 || index >= KeyCount)
             throw new ArgumentOutOfRangeException(nameof(index));
-        
+
         return _keySerializer.Deserialize(_data, offset);
     }
 
@@ -92,26 +95,26 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
     {
         var left = 0;
         var right = KeyCount - 1;
-        
+
         while (left <= right)
         {
             var mid = left + (right - left) / 2;
             var midKey = GetKeyAt(mid);
             var cmp = key.CompareTo(midKey);
-            
+
             if (cmp == 0)
                 return mid;
-            else if (cmp < 0)
+            if (cmp < 0)
                 right = mid - 1;
             else
                 left = mid + 1;
         }
-        
+
         return left;
     }
-    
+
     public abstract TK GetKeyAt(int index);
-    
+
     public abstract bool IsFull();
     public abstract bool IsMinimum();
 }

@@ -21,22 +21,22 @@ public class CollectionInsertOperation<T, TKey>(
     {
         // Extract primary key
         var primaryKey = keyExtractor(record);
-        
+
         // Check if key already exists
         var existing = await primaryIndex.GetAsync(primaryKey);
         if (existing != null)
             throw new InvalidOperationException($"Record with key {primaryKey} already exists");
-        
+
         // Serialize record
         var data = serializer.Serialize(record);
-        
+
         // Store data (returns pointer to storage location)
         var pointer = await dataSession.StoreAsync(
-            schemeId: 1, 
-            collectionId: collectionId, 
-            version: 1, 
-            data: data);
-        
+            1,
+            collectionId,
+            1,
+            data);
+
         // Update primary index: key → pointer
         await primaryIndex.PutAsync(primaryKey, pointer);
     }

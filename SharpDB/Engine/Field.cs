@@ -4,7 +4,7 @@ public class Field
 {
     public string Name { get; set; } = "";
     public FieldType Type { get; set; }
-    public int? MaxLength { get; set; } 
+    public int? MaxLength { get; set; }
     public bool IsPrimaryKey { get; set; }
     public bool IsIndexed { get; set; }
     public bool IsUnique { get; set; }
@@ -20,7 +20,7 @@ public class Field
             FieldType.Double => sizeof(double),
             FieldType.Bool => sizeof(bool),
             FieldType.String => MaxLength ?? 255,
-            FieldType.DateTime => sizeof(long),  // Ticks
+            FieldType.DateTime => sizeof(long), // Ticks
             _ => throw new NotSupportedException($"Field type {Type} not supported")
         };
     }

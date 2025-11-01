@@ -15,7 +15,6 @@ public class IndexSessionFactory<TK>(
     {
         if (useBuffering)
             return new BufferedIndexIOSession<TK>(storage, nodeFactory, indexId);
-        else
-            return new ImmediateCommitIndexSession<TK>(storage, nodeFactory, indexId);
+        return new ImmediateCommitIndexSession<TK>(storage, nodeFactory, indexId);
     }
 }

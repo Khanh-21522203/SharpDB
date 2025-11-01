@@ -20,7 +20,7 @@ public class ImmediateCommitIndexSession<TK>(
         node.Pointer = pointer;
         return node;
     }
-    
+
     public async Task<Pointer> WriteAsync(TreeNode<TK> node)
     {
         var bytes = node.ToBytes();
@@ -28,8 +28,14 @@ public class ImmediateCommitIndexSession<TK>(
         await storage.UpdateNodeAsync(indexId, node.Pointer, bytes);
         return node.Pointer;
     }
-    
-    public Task FlushAsync() => Task.CompletedTask; // Already flushed
-    
-    public void Dispose() { }
+
+    public Task FlushAsync()
+    {
+        return Task.CompletedTask;
+        // Already flushed
+    }
+
+    public void Dispose()
+    {
+    }
 }
