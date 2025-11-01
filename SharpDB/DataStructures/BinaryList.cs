@@ -2,100 +2,77 @@ using SharpDB.Core.Abstractions.Serialization;
 
 namespace SharpDB.DataStructures;
 
-public class BinaryList<TV>
-    where TV : struct, IComparable<TV>
+/// <summary>
+/// Stores a list of values as a single serialized byte array.
+/// Used for duplicate index values.
+/// </summary>
+public class BinaryList<TV> where TV : IComparable<TV>
 {
-    public const int MetaSize = sizeof(int);
-    
+    private readonly List<TV> _values = [];
     private readonly ISerializer<TV> _serializer;
-    private byte[] _data;
     
-    public int Count
-    {
-        get => BitConverter.ToInt32(_data, 0);
-        private set => BitConverter.GetBytes(value).CopyTo(_data, 0);
-    }
-    
-    public BinaryList(ISerializer<TV> serializer, byte[] data)
+    public BinaryList(ISerializer<TV> serializer)
     {
         _serializer = serializer;
-        _data = data;
     }
     
-    public BinaryList(ISerializer<TV> serializer, int initialCapacity)
+    public BinaryList(ISerializer<TV> serializer, IEnumerable<TV> values)
     {
         _serializer = serializer;
-        _data = new byte[MetaSize + initialCapacity * _serializer.Size];
-        Count = 0;
-    }
-    
-    public void Initialize()
-    {
-        Count = 0;
+        _values = new List<TV>(values);
+        _values.Sort();
     }
     
     public void Add(TV value)
     {
-        int capacity = (_data.Length - MetaSize) / _serializer.Size;
-        
-        if (Count >= capacity)
-        {
-            // Grow array
-            int newCapacity = capacity * 2;
-            var newData = new byte[MetaSize + newCapacity * _serializer.Size];
-            Array.Copy(_data, newData, _data.Length);
-            _data = newData;
-        }
-        
-        // Add value
-        int offset = MetaSize + Count * _serializer.Size;
-        var valueBytes = _serializer.Serialize(value);
-        Array.Copy(valueBytes, 0, _data, offset, valueBytes.Length);
-        
-        Count++;
+        _values.Add(value);
+        _values.Sort();
     }
     
     public bool Remove(TV value)
     {
-        int index = IndexOf(value);
-        if (index < 0) return false;
-        
-        // Shift elements
-        int offset = MetaSize + index * _serializer.Size;
-        int bytesToMove = (Count - index - 1) * _serializer.Size;
-        
-        if (bytesToMove > 0)
-        {
-            Array.Copy(_data, offset + _serializer.Size, 
-                      _data, offset, bytesToMove);
-        }
-        
-        Count--;
-        return true;
+        return _values.Remove(value);
     }
     
-    public int IndexOf(TV value)
+    public void Clear()
     {
-        for (int i = 0; i < Count; i++)
+        _values.Clear();
+    }
+    
+    public int Count => _values.Count;
+    
+    public TV this[int index] => _values[index];
+    
+    public List<TV> ToList() => [.._values];
+    
+    public byte[] ToBytes()
+    {
+        var buffer = new byte[sizeof(int) + _values.Count * _serializer.Size];
+        BitConverter.GetBytes(_values.Count).CopyTo(buffer, 0);
+        
+        var offset = sizeof(int);
+        foreach (var value in _values)
         {
-            int offset = MetaSize + i * _serializer.Size;
-            var item = _serializer.Deserialize(_data, offset);
-            
-            if (item.CompareTo(value) == 0)
-                return i;
+            _serializer.Serialize(value).CopyTo(buffer, offset);
+            offset += _serializer.Size;
         }
         
-        return -1;
+        return buffer;
     }
     
-    public IEnumerable<TV> GetItems()
+    public static BinaryList<TV> FromBytes(byte[] bytes, ISerializer<TV> serializer, int offset = 0)
     {
-        for (int i = 0; i < Count; i++)
+        var count = BitConverter.ToInt32(bytes, offset);
+        offset += sizeof(int);
+        
+        var values = new List<TV>();
+        for (var i = 0; i < count; i++)
         {
-            int offset = MetaSize + i * _serializer.Size;
-            yield return _serializer.Deserialize(_data, offset);
+            var value = serializer.Deserialize(bytes, offset);
+            values.Add(value);
+            offset += serializer.Size;
         }
+        
+        return new BinaryList<TV>(serializer, values);
     }
-    
-    public byte[] Data => _data;
 }

@@ -5,73 +5,32 @@ namespace SharpDB.DataStructures;
 /// <summary>
 /// Efficient bit array for tracking null values.
 /// </summary>
-public class Bitmap(byte[] bytes, int bitCount)
+public class Bitmap(int capacity)
 {
-    public Bitmap(int bitCount) : this(new byte[(bitCount + 7) / 8], bitCount)
-    {
-    }
+    private readonly byte[] _bits = new byte[(capacity + 7) / 8];
+    public int Capacity { get; } = capacity;
 
-    public int BitCount => bitCount;
-    public int ByteSize => bytes.Length;
-    
-    // Set bit at index
-    public void Set(int index, bool value)
+    public void Set(int index)
     {
-        if (index < 0 || index >= bitCount)
+        if (index < 0 || index >= Capacity)
             throw new ArgumentOutOfRangeException(nameof(index));
         
-        var byteIndex = index / 8;
-        var bitIndex = index % 8;
-        
-        if (value)
-        {
-            // Set bit to 1
-            bytes[byteIndex] |= (byte)(1 << bitIndex);
-        }
-        else
-        {
-            // Set bit to 0
-            bytes[byteIndex] &= (byte)~(1 << bitIndex);
-        }
+        _bits[index / 8] |= (byte)(1 << (index % 8));
     }
     
-    public bool Get(int index)
+    public void Clear(int index)
     {
-        if (index < 0 || index >= bitCount)
+        if (index < 0 || index >= Capacity)
             throw new ArgumentOutOfRangeException(nameof(index));
         
-        var byteIndex = index / 8;
-        var bitIndex = index % 8;
+        _bits[index / 8] &= (byte)~(1 << (index % 8));
+    }
+    
+    public bool IsSet(int index)
+    {
+        if (index < 0 || index >= Capacity)
+            return false;
         
-        return (bytes[byteIndex] & (1 << bitIndex)) != 0;
-    }
-    
-    public byte[] GetBytes() => bytes;
-    
-    public int CountSetBits()
-    {
-        var count = 0;
-        for (var i = 0; i < bitCount; i++)
-        {
-            if (Get(i))
-                count++;
-        }
-        return count;
-    }
-    
-    public void Clear() => Array.Clear(bytes, 0, bytes.Length);
-    
-    public override string ToString()
-    {
-        var sb = new StringBuilder();
-        sb.Append("Bitmap[");
-        for (var i = 0; i < Math.Min(bitCount, 64); i++)
-        {
-            sb.Append(Get(i) ? '1' : '0');
-        }
-        if (bitCount > 64)
-            sb.Append("...");
-        sb.Append(']');
-        return sb.ToString();
+        return (_bits[index / 8] & (1 << (index % 8))) != 0;
     }
 }
