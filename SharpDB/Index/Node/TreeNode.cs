@@ -109,7 +109,7 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
         return left;
     }
     
-    protected abstract TK GetKeyAt(int index);
+    public abstract TK GetKeyAt(int index);
     
     public abstract bool IsFull();
     public abstract bool IsMinimum();

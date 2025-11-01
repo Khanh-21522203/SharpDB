@@ -1,4 +1,3 @@
-using SharpDB.Core.Abstractions.Index;
 using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.DataStructures;
 
@@ -8,15 +7,15 @@ namespace SharpDB.Index.Node;
 /// Internal node stores keys and child pointers for routing.
 /// Structure: [Header(6)] [Keys(degree*keySize)] [Children((degree+1)*13)]
 /// </summary>
-public class InternalNode<K> : TreeNode<K>
-    where K : IComparable<K>
+public class InternalNode<TK> : TreeNode<TK>
+    where TK : IComparable<TK>
 {
     private readonly int _keysOffset;
     private readonly int _childrenOffset;
     
     public override bool IsLeaf => false;
     
-    public InternalNode(byte[] data, ISerializer<K> keySerializer, int degree)
+    public InternalNode(byte[] data, ISerializer<TK> keySerializer, int degree)
         : base(data, keySerializer, degree)
     {
         _keysOffset = 6;
@@ -31,7 +30,7 @@ public class InternalNode<K> : TreeNode<K>
         if (index < 0 || index > KeyCount)
             throw new ArgumentOutOfRangeException(nameof(index));
         
-        int offset = _childrenOffset + (index * Pointer.ByteSize);
+        var offset = _childrenOffset + (index * Pointer.ByteSize);
         return Pointer.FromBytes(_data, offset);
     }
     
@@ -40,7 +39,7 @@ public class InternalNode<K> : TreeNode<K>
         if (index < 0 || index > KeyCount)
             throw new ArgumentOutOfRangeException(nameof(index));
         
-        int offset = _childrenOffset + (index * Pointer.ByteSize);
+        var offset = _childrenOffset + (index * Pointer.ByteSize);
         pointer.ToBytes().CopyTo(_data, offset);
         MarkModified();
     }
@@ -48,7 +47,7 @@ public class InternalNode<K> : TreeNode<K>
     /// <summary>
     /// Find child pointer for given key.
     /// </summary>
-    public Pointer FindChild(K key)
+    public Pointer FindChild(TK key)
     {
         int index = FindKeyIndex(key);
         
@@ -60,7 +59,7 @@ public class InternalNode<K> : TreeNode<K>
         return GetChild(index);
     }
     
-    public void InsertChild(K key, Pointer childPointer)
+    public void InsertChild(TK key, Pointer childPointer)
     {
         if (IsFull())
             throw new InvalidOperationException("Node is full");
@@ -79,22 +78,22 @@ public class InternalNode<K> : TreeNode<K>
         KeyCount++;
     }
     
-    public K[] SplitAndGetKeys(out Pointer[] rightChildren)
+    public TK[] SplitAndGetKeys(out Pointer[] rightChildren)
     {
-        int midPoint = KeyCount / 2;
-        int rightCount = KeyCount - midPoint - 1; // -1 because mid key goes up
+        var midPoint = KeyCount / 2;
+        var rightCount = KeyCount - midPoint - 1; // -1 because mid key goes up
         
-        var rightKeys = new K[rightCount];
+        var rightKeys = new TK[rightCount];
         rightChildren = new Pointer[rightCount + 1];
         
         // Copy right keys (excluding middle)
-        for (int i = 0; i < rightCount; i++)
+        for (var i = 0; i < rightCount; i++)
         {
             rightKeys[i] = GetKeyAt(midPoint + 1 + i);
         }
         
         // Copy right children
-        for (int i = 0; i <= rightCount; i++)
+        for (var i = 0; i <= rightCount; i++)
         {
             rightChildren[i] = GetChild(midPoint + 1 + i);
         }
@@ -112,32 +111,61 @@ public class InternalNode<K> : TreeNode<K>
     
     public override bool IsMinimum() => KeyCount < (_degree + 1) / 2;
     
-    protected override K GetKeyAt(int index)
+    public override TK GetKeyAt(int index)
     {
-        int offset = _keysOffset + (index * _keySerializer.Size);
+        var offset = _keysOffset + (index * _keySerializer.Size);
         return GetKey(index, offset);
     }
     
-    private void SetKeyAt(int index, K key)
+    public void SetKeyAt(int index, TK key)
     {
-        int offset = _keysOffset + (index * _keySerializer.Size);
+        var offset = _keysOffset + (index * _keySerializer.Size);
         SetKey(index, key, offset);
     }
-    
+
+    public bool RemoveKey(int index)
+    {
+        if (index < 0 || index >= KeyCount)
+            return false;
+        
+        ShiftLeft(index + 1);
+        KeyCount--;
+        
+        return true;
+    }
+
     private void ShiftRight(int startIndex)
     {
-        int keySize = _keySerializer.Size;
+        var keySize = _keySerializer.Size;
         
-        for (int i = KeyCount - 1; i >= startIndex; i--)
+        for (var i = KeyCount - 1; i >= startIndex; i--)
         {
             // Shift key
-            int srcKeyOffset = _keysOffset + (i * keySize);
-            int dstKeyOffset = _keysOffset + ((i + 1) * keySize);
+            var srcKeyOffset = _keysOffset + (i * keySize);
+            var dstKeyOffset = _keysOffset + ((i + 1) * keySize);
             Array.Copy(_data, srcKeyOffset, _data, dstKeyOffset, keySize);
             
             // Shift child pointer
             var srcChildOffset = _childrenOffset + ((i + 1) * Pointer.ByteSize);
             var dstChildOffset = _childrenOffset + ((i + 2) * Pointer.ByteSize);
+            Array.Copy(_data, srcChildOffset, _data, dstChildOffset, Pointer.ByteSize);
+        }
+    }
+    
+    private void ShiftLeft(int startIndex)
+    {
+        var keySize = _keySerializer.Size;
+        
+        for (var i = startIndex; i < KeyCount; i++)
+        {
+            // Shift key
+            var srcKeyOffset = _keysOffset + (i * keySize);
+            var dstKeyOffset = _keysOffset + ((i - 1) * keySize);
+            Array.Copy(_data, srcKeyOffset, _data, dstKeyOffset, keySize);
+            
+            // Shift child pointer
+            var srcChildOffset = _childrenOffset + (i * Pointer.ByteSize);
+            var dstChildOffset = _childrenOffset + ((i - 1) * Pointer.ByteSize);
             Array.Copy(_data, srcChildOffset, _data, dstChildOffset, Pointer.ByteSize);
         }
     }

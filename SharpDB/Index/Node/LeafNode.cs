@@ -1,4 +1,3 @@
-using SharpDB.Core.Abstractions.Index;
 using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.DataStructures;
 
@@ -23,10 +22,10 @@ namespace SharpDB.Index.Node;
 /// Leaf node stores actual key-value pairs.
 /// Structure: [Header(6)] [Keys(degree*keySize)] [Values(degree*valueSize)] [NextPointer(13)]
 /// </summary>
-public class LeafNode<K, V> : TreeNode<K>
-    where K : IComparable<K>
+public class LeafNode<TK, TV> : TreeNode<TK>
+    where TK : IComparable<TK>
 {
-    private readonly ISerializer<V> _valueSerializer;
+    private readonly ISerializer<TV> _valueSerializer;
     private readonly int _keysOffset;
     private readonly int _valuesOffset;
     private readonly int _nextPointerOffset;
@@ -36,7 +35,7 @@ public class LeafNode<K, V> : TreeNode<K>
     /// <summary>
     /// Create new leaf node.
     /// </summary>
-    public LeafNode(byte[] data, ISerializer<K> keySerializer, ISerializer<V> valueSerializer, int degree)
+    public LeafNode(byte[] data, ISerializer<TK> keySerializer, ISerializer<TV> valueSerializer, int degree)
         : base(data, keySerializer, degree)
     {
         _valueSerializer = valueSerializer ?? throw new ArgumentNullException(nameof(valueSerializer));
@@ -76,7 +75,7 @@ public class LeafNode<K, V> : TreeNode<K>
         }
     }
     
-    public void Insert(K key, V value)
+    public void Insert(TK key, TV value)
     {
         if (IsFull())
             throw new InvalidOperationException("Node is full");
@@ -95,7 +94,7 @@ public class LeafNode<K, V> : TreeNode<K>
         KeyCount++;
     }
     
-    public bool TryGetValue(K key, out V? value)
+    public bool TryGetValue(TK key, out TV? value)
     {
         var index = FindKeyIndex(key);
         
@@ -109,7 +108,7 @@ public class LeafNode<K, V> : TreeNode<K>
         return false;
     }
     
-    public bool Remove(K key)
+    public bool Remove(TK key)
     {
         var index = FindKeyIndex(key);
         
@@ -123,13 +122,13 @@ public class LeafNode<K, V> : TreeNode<K>
         return true;
     }
     
-    public (K[] Keys, V[] Values) Split()
+    public (TK[] Keys, TV[] Values) Split()
     {
         var midPoint = KeyCount / 2;
         var rightCount = KeyCount - midPoint;
         
-        var rightKeys = new K[rightCount];
-        var rightValues = new V[rightCount];
+        var rightKeys = new TK[rightCount];
+        var rightValues = new TV[rightCount];
         
         // Copy right half
         for (var i = 0; i < rightCount; i++)
@@ -148,25 +147,25 @@ public class LeafNode<K, V> : TreeNode<K>
     
     public override bool IsMinimum() => KeyCount < (_degree + 1) / 2;
     
-    protected override K GetKeyAt(int index)
+    public override TK GetKeyAt(int index)
     {
         var offset = _keysOffset + (index * _keySerializer.Size);
         return GetKey(index, offset);
     }
     
-    private void SetKeyAt(int index, K key)
+    private void SetKeyAt(int index, TK key)
     {
         var offset = _keysOffset + (index * _keySerializer.Size);
         SetKey(index, key, offset);
     }
     
-    private V GetValueAt(int index)
+    private TV GetValueAt(int index)
     {
         var offset = _valuesOffset + (index * _valueSerializer.Size);
         return _valueSerializer.Deserialize(_data, offset);
     }
     
-    private void SetValueAt(int index, V value)
+    private void SetValueAt(int index, TV value)
     {
         var offset = _valuesOffset + (index * _valueSerializer.Size);
         var valueBytes = _valueSerializer.Serialize(value);
