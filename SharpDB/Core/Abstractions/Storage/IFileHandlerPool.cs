@@ -16,6 +16,11 @@ public interface IFileHandlerPool : IDisposable
     Task ReleaseHandleAsync(int collectionId);
     
     /// <summary>
+    /// Close handle for collection (alias for ReleaseHandleAsync).
+    /// </summary>
+    Task CloseAsync(int collectionId);
+    
+    /// <summary>
     /// Flush all handles.
     /// </summary>
     Task FlushAllAsync();

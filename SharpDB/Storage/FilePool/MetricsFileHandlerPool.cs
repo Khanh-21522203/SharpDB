@@ -1,0 +1,58 @@
+using Serilog;
+
+namespace SharpDB.Storage.FilePool;
+
+public class MetricsFileHandlerPool(
+    long totalRequests,
+    long cacheHits,
+    long cacheMisses,
+    ILogger logger,
+    int maxConcurrentHandles = 100)
+    : FileHandlerPool(logger, maxConcurrentHandles)
+{
+    private long _totalRequests = totalRequests;
+    private long _cacheHits = cacheHits;
+    private long _cacheMisses = cacheMisses;
+
+    public double CacheHitRate => _totalRequests > 0 
+        ? (double)_cacheHits / _totalRequests 
+        : 0;
+    
+    public new async Task<FileStream> GetHandleAsync(int collectionId, string filePath)
+    {
+        Interlocked.Increment(ref _totalRequests);
+        
+        bool wasInCache = _handles.ContainsKey(collectionId);
+        var handle = await base.GetHandleAsync(collectionId, filePath);
+        
+        if (wasInCache)
+            Interlocked.Increment(ref _cacheHits);
+        else
+            Interlocked.Increment(ref _cacheMisses);
+        
+        return handle;
+    }
+    
+    public FileHandlerPoolStatistics GetStatistics()
+    {
+        return new FileHandlerPoolStatistics
+        {
+            TotalRequests = _totalRequests,
+            CacheHits = _cacheHits,
+            CacheMisses = _cacheMisses,
+            CacheHitRate = CacheHitRate,
+            ActiveHandles = _handles.Count,
+            MaxHandles = _maxConcurrentHandles
+        };
+    }
+}
+
+public class FileHandlerPoolStatistics
+{
+    public long TotalRequests { get; init; }
+    public long CacheHits { get; init; }
+    public long CacheMisses { get; init; }
+    public double CacheHitRate { get; init; }
+    public int ActiveHandles { get; init; }
+    public int MaxHandles { get; init; }
+}
