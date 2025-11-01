@@ -251,12 +251,12 @@ graph TB
     TXN --> VERSION
     VERSION --> DB_STORAGE
     
-    style API fill:#e1f5ff,stroke:#333,stroke-width:2px
-    style CM fill:#ffe1f5,stroke:#333,stroke-width:2px
-    style IDX_MGR fill:#f5ffe1,stroke:#333,stroke-width:2px
-    style NODES fill:#fff5e1,stroke:#333,stroke-width:2px
-    style PAGE_MGR fill:#e1ffe1,stroke:#333,stroke-width:2px
-    style DISK fill:#ffe1e1,stroke:#333,stroke-width:2px
+    style API fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000000
+    style CM fill:#ffe1f5,stroke:#333,stroke-width:2px,color:#000000
+    style IDX_MGR fill:#f5ffe1,stroke:#333,stroke-width:2px,color:#000000
+    style NODES fill:#fff5e1,stroke:#333,stroke-width:2px,color:#000000
+    style PAGE_MGR fill:#e1ffe1,stroke:#333,stroke-width:2px,color:#000000
+    style DISK fill:#ffe1e1,stroke:#333,stroke-width:2px,color:#000000
 ```
 
 ### Architecture Description
