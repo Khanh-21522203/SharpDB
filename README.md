@@ -67,8 +67,6 @@
     - Primary key support
     - Basic CRUD operations
 
-### 🚧 In Development
-
 - **Transaction Support**
     - Basic transaction manager
     - Lock manager (partial)
@@ -77,7 +75,6 @@
 - **Index Features**
     - Range queries
     - Secondary indexes
-    - Composite keys
 
 ### 📋 Planned Features
 
