@@ -3,7 +3,7 @@ namespace SharpDB.Engine;
 public class Schema
 {
     public List<Field> Fields { get; set; } = new();
-    
+    public int Version { get; set; } = 1;
     public Field? PrimaryKey => Fields.FirstOrDefault(f => f.IsPrimaryKey);
     
     public Field? GetField(string name)
@@ -27,5 +27,36 @@ public class Schema
         
         if (duplicates.Any())
             throw new InvalidOperationException($"Duplicate field names: {string.Join(", ", duplicates)}");
+    }
+    
+    public bool Matches(Type type)
+    {
+        foreach (var field in Fields)
+        {
+            var property = type.GetProperty(field.Name);
+            if (property == null)
+                return false;
+            
+            var expectedType = GetType(field.Type);
+            if (expectedType != null && property.PropertyType != expectedType)
+                return false;
+        }
+        
+        return true;
+    }
+    
+    private Type? GetType(FieldType fieldType)
+    {
+        return fieldType switch
+        {
+            FieldType.Int => typeof(int),
+            FieldType.Long => typeof(long),
+            FieldType.Double => typeof(double),
+            FieldType.Bool => typeof(bool),
+            FieldType.String => typeof(string),
+            FieldType.DateTime => typeof(DateTime),
+            FieldType.Binary => typeof(byte[]),
+            _ => null
+        };
     }
 }
