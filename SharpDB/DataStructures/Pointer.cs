@@ -1,22 +1,15 @@
 namespace SharpDB.DataStructures;
 
-public record struct Pointer: IComparable<Pointer>
+public record struct Pointer(byte Type, long Position, int Chunk) : IComparable<Pointer>
 {
     public const byte TypeData = 0x01;
     public const byte TypeNode = 0x02;
     public const int ByteSize = 1 + sizeof(long) + sizeof(int); // 13 bytes
     
-    public byte Type { get; init; }
-    public long Position { get; init; }
-    public int Chunk { get; init; }
+    public byte Type { get; init; } = Type;
+    public long Position { get; init; } = Position;
+    public int Chunk { get; init; } = Chunk;
 
-    public Pointer(byte Type, long Position, int Chunk)
-    {
-        Type = Type;
-        Position = Position;
-        Chunk = Chunk;
-    }
-    
     public bool IsDataPointer() => Type == TypeData;
     public bool IsNodePointer() => Type == TypeNode;
     

@@ -1,4 +1,5 @@
 using SharpDB.Core.Abstractions.Index;
+using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.DataStructures;
 
 namespace SharpDB.Index.Node;
@@ -18,227 +19,196 @@ namespace SharpDB.Index.Node;
 //     └─────────┴─────────┘
 //
 // Total size: 1 + (degree-1) × (KSize + VSize) + 26
-public class LeafNode<TK, TV> : TreeNode<TK> where TK : IComparable<TK>
+/// <summary>
+/// Leaf node stores actual key-value pairs.
+/// Structure: [Header(6)] [Keys(degree*keySize)] [Values(degree*valueSize)] [NextPointer(13)]
+/// </summary>
+public class LeafNode<K, V> : TreeNode<K>
+    where K : IComparable<K>
 {
-    private readonly IIndexBinaryObjectFactory<TK> _keyFactory;
-    private readonly IIndexBinaryObjectFactory<TV> _valueFactory;
-    private readonly int _degree;
+    private readonly ISerializer<V> _valueSerializer;
+    private readonly int _keysOffset;
+    private readonly int _valuesOffset;
+    private readonly int _nextPointerOffset;
     
     public override bool IsLeaf => true;
     
-    // Constructor for deserialization
-    public LeafNode(
-        byte[] data,
-        int degree,
-        IIndexBinaryObjectFactory<TK> keyFactory,
-        IIndexBinaryObjectFactory<TV> valueFactory)
-        : base(data)
+    /// <summary>
+    /// Create new leaf node.
+    /// </summary>
+    public LeafNode(byte[] data, ISerializer<K> keySerializer, ISerializer<V> valueSerializer, int degree)
+        : base(data, keySerializer, degree)
     {
-        _degree = degree;
-        _keyFactory = keyFactory;
-        _valueFactory = valueFactory;
-    }
-    // Constructor for new node
-    public LeafNode(
-        int degree, 
-        IIndexBinaryObjectFactory<TK> keyFactory,
-        IIndexBinaryObjectFactory<TV> valueFactory)
-        : base(new byte[CalculateSize(keyFactory.Size, valueFactory.Size, degree)])
-    {
-        _degree = degree;
-        _valueFactory = valueFactory;
-        _keyFactory = keyFactory;
+        _valueSerializer = valueSerializer ?? throw new ArgumentNullException(nameof(valueSerializer));
+        
+        // Calculate offsets
+        // Header: Type(1) + KeyCount(4) + Reserved(1) = 6 bytes
+        _keysOffset = 6;
+        _valuesOffset = _keysOffset + (degree * _keySerializer.Size);
+        _nextPointerOffset = _valuesOffset + (degree * _valueSerializer.Size);
+        
+        // Set leaf bit
+        _data[0] |= TypeLeafBit;
     }
     
-    // Header + KeyValues + Next pointer + Prev pointer
-    private static int CalculateSize(int keySize, int valueSize, int degree)
-        => 1 + (degree - 1) * (keySize + valueSize) + 2 * Pointer.ByteSize;
-
-    public List<KeyValue<TK, TV>> GetKeyValues()
+    public Pointer? NextLeaf
     {
-        var result = new List<KeyValue<TK, TV>>();
-        var kvSize = _keyFactory.Size + _valueFactory.Size;
-
-        for (var i = 0; i < _degree - 1; i++)
+        get
         {
-            var offset = 1 + i * kvSize;
-            if (IsEmpty(offset, _keyFactory.Size))
-                break;
-
-            var keyBinary = _keyFactory.Create(Data, offset);
-            var key = keyBinary.AsObject();
+            var hasNext = _data[_nextPointerOffset];
+            if (hasNext == 0)
+                return null;
             
-            var  valueBinary = _valueFactory.Create(Data, offset);
-            var value = valueBinary.AsObject();
-            
-            result.Add(new KeyValue<TK, TV>(key, value));
+            return Pointer.FromBytes(_data, _nextPointerOffset + 1);
         }
-        return result;
-    }
-
-    public void SetKeyValues(List<KeyValue<TK, TV>> keyValues)
-    {
-        var kvSize = _keyFactory.Size + _valueFactory.Size;
-        
-        // Write key-values
-        for (var i = 0; i < keyValues.Count; i++)
+        set
         {
-            var offset = 1 + (i * kvSize);
-            
-            var keyBinary = _keyFactory.Create(keyValues[i].Key);
-            var valueBinary = _valueFactory.Create(keyValues[i].Value);
-            
-            Array.Copy(keyBinary.GetBytes(), 0, Data, offset, _keyFactory.Size);
-            Array.Copy(valueBinary.GetBytes(), 0, Data, offset + _keyFactory.Size, _valueFactory.Size);
+            if (value == null)
+            {
+                _data[_nextPointerOffset] = 0;
+            }
+            else
+            {
+                _data[_nextPointerOffset] = 1;
+                value.Value.ToBytes().CopyTo(_data, _nextPointerOffset + 1);
+            }
+            MarkModified();
         }
-        // Clear remaining slots
-        for (var i = keyValues.Count; i < _degree - 1; i++)
-        {
-            var offset = 1 + (i * kvSize);
-            Array.Clear(Data, offset, kvSize);
-        }
-        
-        MarkModified();
-    }
-
-    public int AddKeyValue(TK key, TV value)
-    {
-        var keyValues = GetKeyValues();
-        var newKv = new KeyValue<TK, TV>(key, value);
-        
-        var index = keyValues.BinarySearch(newKv);
-        if (index >= 0)
-            throw new InvalidOperationException($"Key {key} already exists");
-        
-        var insertIndex = ~index;
-        keyValues.Insert(insertIndex, newKv);
-        
-        SetKeyValues(keyValues);
-        
-        return insertIndex;
     }
     
-    public bool RemoveKeyValue(TK key)
+    public void Insert(K key, V value)
     {
-        var keyValues = GetKeyValues();
-        var searchKv = new KeyValue<TK, TV>(key, default!);
+        if (IsFull())
+            throw new InvalidOperationException("Node is full");
         
-        var index = keyValues.BinarySearch(searchKv);
-        if (index < 0)
-            return false;
+        int insertIndex = FindKeyIndex(key);
         
-        keyValues.RemoveAt(index);
-        SetKeyValues(keyValues);
+        // Shift keys and values to make room
+        if (insertIndex < KeyCount)
+        {
+            ShiftRight(insertIndex);
+        }
+        
+        // Insert key and value
+        SetKeyAt(insertIndex, key);
+        SetValueAt(insertIndex, value);
+        KeyCount++;
+    }
+    
+    public bool TryGetValue(K key, out V? value)
+    {
+        var index = FindKeyIndex(key);
+        
+        if (index < KeyCount && GetKeyAt(index).CompareTo(key) == 0)
+        {
+            value = GetValueAt(index);
+            return true;
+        }
+        
+        value = default;
+        return false;
+    }
+    
+    public bool Remove(K key)
+    {
+        var index = FindKeyIndex(key);
+        
+        if (index >= KeyCount || GetKeyAt(index).CompareTo(key) != 0)
+            return false; // Key not found
+        
+        // Shift left to remove
+        ShiftLeft(index + 1);
+        KeyCount--;
         
         return true;
     }
     
-    public bool UpdateKeyValue(TK key, TV newValue)
+    public (K[] Keys, V[] Values) Split()
     {
-        var keyValues = GetKeyValues();
-        var searchKv = new KeyValue<TK, TV>(key, default!);
+        var midPoint = KeyCount / 2;
+        var rightCount = KeyCount - midPoint;
         
-        var index = keyValues.BinarySearch(searchKv);
-        if (index < 0)
-            return false;
+        var rightKeys = new K[rightCount];
+        var rightValues = new V[rightCount];
         
-        keyValues[index] = new KeyValue<TK, TV>(key, newValue);
-        SetKeyValues(keyValues);
-        
-        return true;
-    }
-    
-    public bool TryGetValue(TK key, out TV? value)
-    {
-        var keyValues = GetKeyValues();
-        var searchKv = new KeyValue<TK, TV>(key, default!);
-        
-        var index = keyValues.BinarySearch(searchKv);
-        if (index < 0)
+        // Copy right half
+        for (var i = 0; i < rightCount; i++)
         {
-            value = default;
-            return false;
+            rightKeys[i] = GetKeyAt(midPoint + i);
+            rightValues[i] = GetValueAt(midPoint + i);
         }
         
-        value = keyValues[index].Value;
-        return true;
+        // Truncate this node
+        KeyCount = midPoint;
+        
+        return (rightKeys, rightValues);
     }
     
-    public bool IsFull() => GetKeyValues().Count >= _degree - 1;
+    public override bool IsFull() => KeyCount >= _degree;
     
-    public List<KeyValue<TK, TV>> AddAndSplit(TK key, TV value)
+    public override bool IsMinimum() => KeyCount < (_degree + 1) / 2;
+    
+    protected override K GetKeyAt(int index)
     {
-        var keyValues = GetKeyValues();
-        var newKv = new KeyValue<TK, TV>(key, value);
-        
-        var index = keyValues.BinarySearch(newKv);
-        var insertIndex = index >= 0 ? index : ~index;
-        keyValues.Insert(insertIndex, newKv);
-        
-        var mid = (_degree - 1) / 2;
-        
-        var leftHalf = keyValues.Take(mid + 1).ToList();
-        SetKeyValues(leftHalf);
-        
-        return keyValues.Skip(mid + 1).ToList();
+        var offset = _keysOffset + (index * _keySerializer.Size);
+        return GetKey(index, offset);
     }
     
-    public Pointer? GetNextSibling()
+    private void SetKeyAt(int index, K key)
     {
-        var offset = Data.Length - (2 * Pointer.ByteSize);
-        
-        if (IsEmpty(offset, Pointer.ByteSize))
-            return null;
-        
-        return Pointer.FromBytes(Data, offset);
+        var offset = _keysOffset + (index * _keySerializer.Size);
+        SetKey(index, key, offset);
     }
     
-    
-    public void SetNextSibling(Pointer? pointer)
+    private V GetValueAt(int index)
     {
-        var offset = Data.Length - (2 * Pointer.ByteSize);
-        
-        if (pointer == null)
-        {
-            Array.Clear(Data, offset, Pointer.ByteSize);
-        }
-        else
-        {
-            pointer.FillBytes(Data, offset);
-        }
-        
+        var offset = _valuesOffset + (index * _valueSerializer.Size);
+        return _valueSerializer.Deserialize(_data, offset);
+    }
+    
+    private void SetValueAt(int index, V value)
+    {
+        var offset = _valuesOffset + (index * _valueSerializer.Size);
+        var valueBytes = _valueSerializer.Serialize(value);
+        Array.Copy(valueBytes, 0, _data, offset, valueBytes.Length);
         MarkModified();
     }
     
-    public Pointer? GetPreviousSibling()
+    private void ShiftRight(int startIndex)
     {
-        var offset = Data.Length - Pointer.ByteSize;
+        var keySize = _keySerializer.Size;
+        var valueSize = _valueSerializer.Size;
         
-        if (IsEmpty(offset, Pointer.ByteSize))
-            return null;
-        
-        return Pointer.FromBytes(Data, offset);
+        for (var i = KeyCount - 1; i >= startIndex; i--)
+        {
+            // Shift key
+            var srcKeyOffset = _keysOffset + (i * keySize);
+            var dstKeyOffset = _keysOffset + ((i + 1) * keySize);
+            Array.Copy(_data, srcKeyOffset, _data, dstKeyOffset, keySize);
+            
+            // Shift value
+            var srcValueOffset = _valuesOffset + (i * valueSize);
+            var dstValueOffset = _valuesOffset + ((i + 1) * valueSize);
+            Array.Copy(_data, srcValueOffset, _data, dstValueOffset, valueSize);
+        }
     }
     
-    public void SetPreviousSibling(Pointer? pointer)
+    private void ShiftLeft(int startIndex)
     {
-        var offset = Data.Length - Pointer.ByteSize;
+        var keySize = _keySerializer.Size;
+        var valueSize = _valueSerializer.Size;
         
-        if (pointer == null)
+        for (var i = startIndex; i < KeyCount; i++)
         {
-            Array.Clear(Data, offset, Pointer.ByteSize);
+            // Shift key
+            var srcKeyOffset = _keysOffset + (i * keySize);
+            var dstKeyOffset = _keysOffset + ((i - 1) * keySize);
+            Array.Copy(_data, srcKeyOffset, _data, dstKeyOffset, keySize);
+            
+            // Shift value
+            var srcValueOffset = _valuesOffset + (i * valueSize);
+            var dstValueOffset = _valuesOffset + ((i - 1) * valueSize);
+            Array.Copy(_data, srcValueOffset, _data, dstValueOffset, valueSize);
         }
-        else
-        {
-            pointer.FillBytes(Data, offset);
-        }
-        
-        MarkModified();
-    }
-    
-    public override string ToString()
-    {
-        var kvs = GetKeyValues();
-        return $"LeafNode[Count={kvs.Count}, Root={IsRoot}]";
     }
 }
