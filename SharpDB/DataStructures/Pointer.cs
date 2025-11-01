@@ -1,6 +1,6 @@
 namespace SharpDB.DataStructures;
 
-public record Pointer: IComparable<Pointer>
+public record struct Pointer: IComparable<Pointer>
 {
     public const byte TypeData = 0x01;
     public const byte TypeNode = 0x02;
@@ -23,10 +23,8 @@ public record Pointer: IComparable<Pointer>
     public static Pointer Empty() => new(0x00, 0, 0);
     public bool IsEmpty() => Type == 0x00;
 
-    public int CompareTo(Pointer? other)
+    public int CompareTo(Pointer other)
     {
-        if (other == null) return 1;
-        
         var chunkComp = Chunk.CompareTo(other.Chunk);
         if (chunkComp != 0) return chunkComp;
         
@@ -56,7 +54,7 @@ public record Pointer: IComparable<Pointer>
         var chunk = BitConverter.ToInt32(bytes, offset + 9);
         return new Pointer(type, position, chunk);
     }
-    
+
     public override string ToString()
     {
         var typeStr = Type switch
