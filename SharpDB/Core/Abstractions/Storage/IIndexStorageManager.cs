@@ -3,22 +3,47 @@ using SharpDB.DataStructures;
 namespace SharpDB.Core.Abstractions.Storage;
 
 /// <summary>
-/// Manages persistent storage of B+ Tree nodes.
+/// Manages persistent storage for B+ tree index nodes.
 /// </summary>
 public interface IIndexStorageManager : IDisposable
 {
-    // Header operations
-    Task<byte[]> ReadHeaderAsync(int indexId);
-    Task WriteHeaderAsync(int indexId, byte[] header);
-    Task<int> GetIndexHeaderSizeAsync(int indexId);
+    /// <summary>
+    /// Get root pointer for index.
+    /// </summary>
+    Task<Pointer?> GetRootPointerAsync(int indexId);
     
-    // Node operations
-    Task<Pointer> WriteAsync(int indexId, byte[] data);
-    Task<byte[]> ReadAsync(int indexId, Pointer pointer, int length);
-    Task UpdateAsync(int indexId, Pointer pointer, byte[] data);
-    Task RemoveAsync(int indexId, Pointer pointer);
+    /// <summary>
+    /// Set root pointer for index.
+    /// </summary>
+    Task SetRootPointerAsync(int indexId, Pointer pointer);
     
-    // Utility
+    /// <summary>
+    /// Read node from storage.
+    /// </summary>
+    Task<NodeData> ReadNodeAsync(int indexId, Pointer pointer);
+    
+    /// <summary>
+    /// Write new node to storage.
+    /// </summary>
+    Task<NodeData> WriteNewNodeAsync(int indexId, byte[] data);
+    
+    /// <summary>
+    /// Update existing node.
+    /// </summary>
+    Task UpdateNodeAsync(int indexId, Pointer pointer, byte[] data);
+    
+    /// <summary>
+    /// Remove node from storage.
+    /// </summary>
+    Task RemoveNodeAsync(int indexId, Pointer pointer);
+    
+    /// <summary>
+    /// Get empty node buffer.
+    /// </summary>
     byte[] GetEmptyNode(int keySize, int valueSize, int degree);
-    Task FlushAsync();
 }
+
+/// <summary>
+/// Encapsulates node data read from storage.
+/// </summary>
+public record NodeData(Pointer Pointer, byte[] Bytes);
