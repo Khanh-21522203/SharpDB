@@ -5,12 +5,11 @@ using SharpDB.DataStructures;
 
 namespace SharpDB.Engine.Transaction;
 
-public class VersionManager : IVersionManager
+public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
 {
-    private readonly IDatabaseStorageManager _storage;
     private readonly ConcurrentDictionary<Pointer, List<VersionedRecord>> _versionChains = new();
     private readonly ConcurrentDictionary<long, HashSet<Pointer>> _txnWrites = new();
-    
+
     public async Task<VersionedRecord?> ReadAsync(Pointer pointer, long readTimestamp)
     {
         if (!_versionChains.TryGetValue(pointer, out var chain))
@@ -42,7 +41,7 @@ public class VersionManager : IVersionManager
         };
         
         // Store new version
-        var newPointer = await _storage.StoreAsync(1, 1, 1, data);
+        var newPointer = await storage.StoreAsync(1, 1, 1, data);
         newVersion.Pointer = newPointer;
         
         if (pointer != null)

@@ -23,12 +23,11 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
     public DiskPageFileIndexStorageManager(
         string basePath,
         ILogger logger,
-        IFileHandlerPool filePool,
-        IIndexHeaderManager? headerManager = null)
+        IFileHandlerPool filePool)
     {
         _basePath = basePath ?? throw new ArgumentNullException(nameof(basePath));
         _filePool = filePool;
-        _headerManager = headerManager ?? new IndexHeaderManager(basePath);
+        _headerManager = new IndexHeaderManager(basePath);
         _logger = logger;
         
         Directory.CreateDirectory(basePath);
