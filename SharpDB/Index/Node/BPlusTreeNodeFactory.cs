@@ -37,8 +37,9 @@ public class BPlusTreeNodeFactory<TK, TV>(
 
     private int CalculateLeafNodeSize()
     {
-        // Header(6) + Keys(degree*keySize) + Values(degree*valueSize) + NextPointer(14)
-        return 6 + degree * keySerializer.Size + degree * valueSerializer.Size + 14;
+        // Header(6) + Keys(degree*keySize) + Values(degree*valueSize) + NextPointer(1+13)
+        // NextPointer needs 1 byte for flag + 13 bytes for pointer
+        return 6 + degree * keySerializer.Size + degree * valueSerializer.Size + 1 + Pointer.ByteSize;
     }
 
     private int CalculateInternalNodeSize()

@@ -32,6 +32,14 @@ public class BufferedIndexIOSession<TK>(
     public Task<Pointer> WriteAsync(TreeNode<TK> node)
     {
         _dirtyNodes.Add(node);
+        
+        // If this is a new node (no pointer set), create a temporary pointer
+        if (node.Pointer.Position == 0 && node.Pointer.Type == 0)
+        {
+            // Create a temporary pointer with TypeNode and Position = -1 to indicate new node
+            node.Pointer = new Pointer(Pointer.TypeNode, -1, 0);
+        }
+        
         return Task.FromResult(node.Pointer);
     }
 
@@ -45,10 +53,16 @@ public class BufferedIndexIOSession<TK>(
             {
                 var result = await storage.WriteNewNodeAsync(indexId, bytes);
                 node.Pointer = result.Pointer;
+                
+                // Update the cache with the new pointer
+                _cache[node.Pointer] = node;
             }
             else
             {
                 await storage.UpdateNodeAsync(indexId, node.Pointer, bytes);
+                
+                // Ensure the cache is updated
+                _cache[node.Pointer] = node;
             }
 
             node.ClearModified();

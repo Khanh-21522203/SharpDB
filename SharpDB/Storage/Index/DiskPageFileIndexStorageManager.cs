@@ -50,6 +50,9 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
     {
         if (pointer.Type != Pointer.TypeNode)
             throw new ArgumentException("Pointer must be of TypeNode", nameof(pointer));
+            
+        if (pointer.Position < 0)
+            throw new ArgumentException($"Invalid pointer position: {pointer.Position}", nameof(pointer));
 
         var filePath = GetIndexFilePath(indexId);
         var handle = await _filePool.GetHandleAsync(indexId, filePath);
@@ -62,10 +65,9 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
         await handle.ReadExactlyAsync(sizeBuffer, 0, 4);
         var nodeSize = BitConverter.ToInt32(sizeBuffer, 0);
 
-        // Read full node
+        // Read node data (without including the size prefix in the data)
         var nodeData = new byte[nodeSize];
-        Array.Copy(sizeBuffer, nodeData, 4);
-        await handle.ReadExactlyAsync(nodeData, 4, nodeSize - 4);
+        await handle.ReadExactlyAsync(nodeData, 0, nodeSize);
 
         _logger.Debug("Read node at {Position}, size {Size}",
             pointer.Position, nodeSize);
@@ -95,11 +97,17 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
         {
             // Allocate new position at end of file
             position = _nextPositions.GetOrAdd(indexId, handle.Length);
-            _nextPositions[indexId] = position + data.Length;
+            _nextPositions[indexId] = position + 4 + data.Length; // 4 bytes for size + data
         }
 
-        // Write node
+        // Write node with size prefix
         handle.Seek(position, SeekOrigin.Begin);
+        
+        // Write size first (4 bytes)
+        var sizeBytes = BitConverter.GetBytes(data.Length);
+        await handle.WriteAsync(sizeBytes, 0, 4);
+        
+        // Then write the actual node data
         await handle.WriteAsync(data, 0, data.Length);
         await handle.FlushAsync();
 
@@ -122,8 +130,14 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
         var filePath = GetIndexFilePath(indexId);
         var handle = await _filePool.GetHandleAsync(indexId, filePath);
 
-        // Write at existing position
+        // Write at existing position with size prefix
         handle.Seek(pointer.Position, SeekOrigin.Begin);
+        
+        // Write size first (4 bytes)
+        var sizeBytes = BitConverter.GetBytes(data.Length);
+        await handle.WriteAsync(sizeBytes, 0, 4);
+        
+        // Then write the actual node data
         await handle.WriteAsync(data, 0, data.Length);
         await handle.FlushAsync();
 

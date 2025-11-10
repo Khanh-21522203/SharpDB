@@ -182,9 +182,7 @@ public class FileHandlerPool : IFileHandlerPool
         if (_disposed)
             return;
 
-        _disposed = true;
-
-        // Flush all handles
+        // Flush all handles BEFORE setting disposed flag
         try
         {
             FlushAllAsync().Wait(TimeSpan.FromSeconds(5));
@@ -193,6 +191,8 @@ public class FileHandlerPool : IFileHandlerPool
         {
             _logger.Error(ex, "Error flushing handles during disposal");
         }
+
+        _disposed = true;
 
         // Dispose all handles
         foreach (var handle in _handles.Values)

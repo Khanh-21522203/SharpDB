@@ -8,15 +8,16 @@ namespace SharpDB.Storage.Sessions;
 public class BufferedDataIOSession(IDatabaseStorageManager storage) : IDataIOSession
 {
     private readonly HashSet<Pointer> _deleteBuffer = [];
-    private readonly List<(int, int, int, byte[])> _insertBuffer = new();
     private readonly Dictionary<Pointer, byte[]> _updateBuffer = new();
 
     public async Task<Pointer> StoreAsync(int schemeId, int collectionId, int version, byte[] data)
     {
-        _insertBuffer.Add((schemeId, collectionId, version, data));
-
-        // Return temporary pointer
-        return new Pointer(Pointer.TypeData, -_insertBuffer.Count, 0);
+        // Directly store to get real pointer
+        var pointer = await storage.StoreAsync(schemeId, collectionId, version, data);
+        
+        // Don't flush after every insert - let the caller decide when to flush
+        
+        return pointer;
     }
 
     public async Task<DBObject?> SelectAsync(Pointer pointer)
@@ -55,11 +56,6 @@ public class BufferedDataIOSession(IDatabaseStorageManager storage) : IDataIOSes
 
     public async Task FlushAsync()
     {
-        // Process inserts
-        foreach (var (schemeId, collectionId, version, data) in _insertBuffer)
-            await storage.StoreAsync(schemeId, collectionId, version, data);
-        _insertBuffer.Clear();
-
         // Process updates
         foreach (var (pointer, data) in _updateBuffer) await storage.UpdateAsync(pointer, data);
         _updateBuffer.Clear();

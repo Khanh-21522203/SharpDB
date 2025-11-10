@@ -1,4 +1,4 @@
-namespace SharpDB.Utils.Caching;
+namespace SharpDB.DataStructures;
 
 public class LruCache<TKey, TValue> where TKey : notnull
 {

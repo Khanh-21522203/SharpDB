@@ -120,6 +120,12 @@ public class BinaryObjectSerializer : IObjectSerializer
                 bytes[offset++] = boolVal ? (byte)1 : (byte)0;
                 break;
 
+            case FieldType.Double:
+                var doubleVal = value != null ? (double)value : 0.0;
+                BitConverter.GetBytes(doubleVal).CopyTo(bytes, offset);
+                offset += sizeof(double);
+                break;
+
             default:
                 throw new NotSupportedException($"Field type {field.Type} not supported");
         }
@@ -154,6 +160,11 @@ public class BinaryObjectSerializer : IObjectSerializer
 
             case FieldType.Bool:
                 value = bytes[offset++] != 0;
+                break;
+
+            case FieldType.Double:
+                value = BitConverter.ToDouble(bytes, offset);
+                offset += sizeof(double);
                 break;
         }
 

@@ -9,6 +9,12 @@ public class EngineConfig
     public int BTreeDegree { get; set; } = 128;
     public bool UseBufferedIO { get; set; } = true;
     public IsolationLevel DefaultIsolationLevel { get; set; } = IsolationLevel.ReadCommitted;
+    
+    // WAL Configuration
+    public bool EnableWAL { get; set; } = true;
+    public int WALMaxFileSize { get; set; } = 10 * 1024 * 1024; // 10MB default
+    public int WALCheckpointInterval { get; set; } = 1000; // Checkpoint every 1000 transactions
+    public bool WALAutoCheckpoint { get; set; } = true;
 
     public StorageConfig Storage { get; set; } = new();
     public IndexConfig Index { get; set; } = new();

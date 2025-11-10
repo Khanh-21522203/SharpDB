@@ -38,11 +38,12 @@ public class LeafNode<TK, TV> : TreeNode<TK>
     {
         _valueSerializer = valueSerializer ?? throw new ArgumentNullException(nameof(valueSerializer));
 
-        // Calculate offsets
+        // Calculate offsets based on actual data array size
         // Header: Type(1) + KeyCount(4) + Reserved(1) = 6 bytes
         _keysOffset = 6;
-        _valuesOffset = _keysOffset + degree * _keySerializer.Size;
-        _nextPointerOffset = _valuesOffset + degree * _valueSerializer.Size;
+        // Use the actual degree for calculation
+        _valuesOffset = _keysOffset + degree * keySerializer.Size;
+        _nextPointerOffset = _valuesOffset + degree * valueSerializer.Size;
 
         // Set leaf bit
         _data[0] |= TypeLeafBit;
@@ -141,6 +142,25 @@ public class LeafNode<TK, TV> : TreeNode<TK>
         return (rightKeys, rightValues);
     }
 
+    /// <summary>
+    /// Merge all keys and values from another leaf node into this one.
+    /// Does NOT check capacity - caller must ensure there's enough space.
+    /// </summary>
+    public void MergeFrom(LeafNode<TK, TV> other)
+    {
+        var startIndex = KeyCount;
+        
+        // Copy all keys and values from other node
+        for (var i = 0; i < other.KeyCount; i++)
+        {
+            SetKeyAt(startIndex + i, other.GetKeyAt(i));
+            SetValueAt(startIndex + i, other.GetValueAt(i));
+        }
+        
+        KeyCount += other.KeyCount;
+        MarkModified();
+    }
+
     public override bool IsFull()
     {
         return KeyCount >= _degree;
@@ -173,7 +193,16 @@ public class LeafNode<TK, TV> : TreeNode<TK>
     {
         var offset = _valuesOffset + index * _valueSerializer.Size;
         var valueBytes = _valueSerializer.Serialize(value);
-        Array.Copy(valueBytes, 0, _data, offset, valueBytes.Length);
+        
+        // Check if we have enough space
+        if (offset + _valueSerializer.Size > _data.Length)
+        {
+            throw new InvalidOperationException(
+                $"Not enough space in data array. Offset: {offset}, ValueSize: {_valueSerializer.Size}, " +
+                $"DataLength: {_data.Length}, ValuesOffset: {_valuesOffset}, Index: {index}");
+        }
+        
+        Array.Copy(valueBytes, 0, _data, offset, _valueSerializer.Size);
         MarkModified();
     }
 

@@ -24,7 +24,8 @@ public class CollectionInsertOperation<T, TKey>(
 
         // Check if key already exists
         var existing = await primaryIndex.GetAsync(primaryKey);
-        if (existing != null)
+        // For Pointer? (nullable struct), check if it has a value and is not default
+        if (existing is { Position: > 0 })
             throw new InvalidOperationException($"Record with key {primaryKey} already exists");
 
         // Serialize record

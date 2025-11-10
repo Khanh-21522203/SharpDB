@@ -39,8 +39,9 @@ public class CollectionManager<T, TKey>(
 
         await op.ExecuteAsync();
 
-        // Update secondary indexes
-        await UpdateSecondaryIndexesAsync(record, true);
+        // Update secondary indexes (only if there are any)
+        if (_secondaryIndexes.Count > 0)
+            await UpdateSecondaryIndexesAsync(record, true);
     }
 
     public async Task<T?> SelectAsync(TKey primaryKey)
@@ -66,7 +67,8 @@ public class CollectionManager<T, TKey>(
 
         await op.ExecuteAsync();
 
-        await UpdateSecondaryIndexesAsync(record, false);
+        if (_secondaryIndexes.Count > 0)
+            await UpdateSecondaryIndexesAsync(record, false);
     }
 
     public async Task<bool> DeleteAsync(TKey primaryKey)
@@ -137,7 +139,8 @@ public class CollectionManager<T, TKey>(
         var primaryKey = keyExtractor(record);
         var pointer = await primaryIndex.GetAsync(primaryKey);
 
-        if (pointer == null)
+        // Check if pointer is valid (not null and has actual data)
+        if (pointer is not { Position: > 0 })
             return;
 
         foreach (var (fieldName, indexWrapper) in _secondaryIndexes)
@@ -151,6 +154,8 @@ public class CollectionManager<T, TKey>(
         if (type == typeof(long)) return (ISerializer<TType>)new LongSerializer();
         if (type == typeof(int)) return (ISerializer<TType>)new IntSerializer();
         if (type == typeof(string)) return (ISerializer<TType>)new StringSerializer(255);
+        if (type == typeof(DateTime)) return (ISerializer<TType>)new DateTimeSerializer();
+        if (type == typeof(decimal)) return (ISerializer<TType>)new DecimalSerializer();
         throw new NotSupportedException($"Type {type} not supported");
     }
 

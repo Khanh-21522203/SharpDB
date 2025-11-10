@@ -55,13 +55,27 @@ public class DeleteOperation<TK, TV>(
 
         var deleted = await DeleteFromNode(child, key);
 
-        if (child.IsMinimum() && !child.IsRoot) await RebalanceChild(internalNode, child, childPointer);
+        if (child.IsMinimum() && !child.IsRoot)
+        {
+            await RebalanceChild(internalNode, child, childPointer);
+            
+            // After rebalance, parent might need updating
+            await session.WriteAsync(internalNode);
+        }
 
         return deleted;
     }
 
     private async Task RebalanceChild(InternalNode<TK> parent, TreeNode<TK> child, Pointer childPointer)
     {
+        // Don't rebalance if parent is root with only one child (will be handled by caller)
+        if (parent.IsRoot && parent.KeyCount == 0)
+            return;
+        
+        // If parent has no keys, it should have exactly one child - nothing to rebalance
+        if (parent.KeyCount == 0)
+            return;
+            
         var childIndex = FindChildIndex(parent, childPointer);
 
         // Try borrow from left sibling
@@ -161,13 +175,16 @@ public class DeleteOperation<TK, TV>(
             var childLeaf = (LeafNode<TK, TV>)child;
             var leftLeaf = (LeafNode<TK, TV>)leftSibling;
 
-            // Move all from child to left sibling
-            for (var i = 0; i < childLeaf.KeyCount; i++)
+            // Check if merge is possible (total keys must fit in one node)
+            var totalKeys = leftLeaf.KeyCount + childLeaf.KeyCount;
+            if (totalKeys > leftLeaf.Degree)
             {
-                var key = childLeaf.GetKeyAt(i);
-                childLeaf.TryGetValue(key, out var value);
-                leftLeaf.Insert(key, value!);
+                // Cannot merge - would exceed capacity
+                return;
             }
+
+            // Merge child into left sibling using direct copy (no Insert checks)
+            leftLeaf.MergeFrom(childLeaf);
 
             leftLeaf.NextLeaf = childLeaf.NextLeaf;
 
@@ -175,6 +192,31 @@ public class DeleteOperation<TK, TV>(
             parent.RemoveKey(childIndex - 1);
 
             await session.WriteAsync(leftLeaf);
+            await session.WriteAsync(parent);
+        }
+        else
+        {
+            var childInternal = (InternalNode<TK>)child;
+            var leftInternal = (InternalNode<TK>)leftSibling;
+
+            // Check capacity: left keys + separator + child keys must fit
+            var totalKeys = leftInternal.KeyCount + 1 + childInternal.KeyCount; // +1 for separator
+            if (totalKeys > leftInternal.Degree)
+            {
+                // Cannot merge - would exceed capacity
+                return;
+            }
+
+            // Get separator key from parent
+            var separatorKey = parent.GetKeyAt(childIndex - 1);
+
+            // Merge child into left sibling using direct copy (no InsertChild checks)
+            leftInternal.MergeFrom(separatorKey, childInternal);
+
+            // Remove separator from parent
+            parent.RemoveKey(childIndex - 1);
+
+            await session.WriteAsync(leftInternal);
             await session.WriteAsync(parent);
         }
     }
@@ -187,13 +229,16 @@ public class DeleteOperation<TK, TV>(
             var childLeaf = (LeafNode<TK, TV>)child;
             var rightLeaf = (LeafNode<TK, TV>)rightSibling;
 
-            // Move all from right sibling to child
-            for (var i = 0; i < rightLeaf.KeyCount; i++)
+            // Check if merge is possible (total keys must fit in one node)
+            var totalKeys = childLeaf.KeyCount + rightLeaf.KeyCount;
+            if (totalKeys > childLeaf.Degree)
             {
-                var key = rightLeaf.GetKeyAt(i);
-                rightLeaf.TryGetValue(key, out var value);
-                childLeaf.Insert(key, value!);
+                // Cannot merge - would exceed capacity
+                return;
             }
+
+            // Merge right sibling into child using direct copy (no Insert checks)
+            childLeaf.MergeFrom(rightLeaf);
 
             // Update next pointer
             childLeaf.NextLeaf = rightLeaf.NextLeaf;
@@ -209,19 +254,19 @@ public class DeleteOperation<TK, TV>(
             var childInternal = (InternalNode<TK>)child;
             var rightInternal = (InternalNode<TK>)rightSibling;
 
+            // Check capacity: child keys + separator + right keys must fit
+            var totalKeys = childInternal.KeyCount + 1 + rightInternal.KeyCount; // +1 for separator
+            if (totalKeys > childInternal.Degree)
+            {
+                // Cannot merge - would exceed capacity
+                return;
+            }
+
             // Get separator key from parent
             var separatorKey = parent.GetKeyAt(childIndex);
 
-            // Insert separator into child
-            childInternal.InsertChild(separatorKey, rightInternal.GetChild(0));
-
-            // Move all keys and children from right to child
-            for (var i = 0; i < rightInternal.KeyCount; i++)
-            {
-                var key = rightInternal.GetKeyAt(i);
-                var childPtr = rightInternal.GetChild(i + 1);
-                childInternal.InsertChild(key, childPtr);
-            }
+            // Merge right sibling into child using direct copy (no InsertChild checks)
+            childInternal.MergeFrom(separatorKey, rightInternal);
 
             // Remove separator from parent
             parent.RemoveKey(childIndex);

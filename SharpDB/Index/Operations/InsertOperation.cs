@@ -24,6 +24,13 @@ public class InsertOperation<TK, TV>(
             newRoot.Insert(key, value);
 
             var pointer = await session.WriteAsync(newRoot);
+            
+            // Flush immediately to get the actual pointer
+            await session.FlushAsync();
+            
+            // Update pointer with the actual persisted location
+            pointer = newRoot.Pointer;
+            
             await storage.SetRootPointerAsync(indexId, pointer);
             return;
         }
@@ -36,10 +43,18 @@ public class InsertOperation<TK, TV>(
             var newRoot = nodeFactory.CreateInternalNode();
             newRoot.SetAsRoot();
             root.UnsetAsRoot();
+            
+            // Set the original root as the first child of the new root
+            newRoot.SetChild(0, root.Pointer);
 
             await SplitChild(newRoot, 0, root);
 
             var newRootPointer = await session.WriteAsync(newRoot);
+            
+            // Flush to persist the new root and get the actual pointer
+            await session.FlushAsync();
+            newRootPointer = newRoot.Pointer;
+            
             await storage.SetRootPointerAsync(indexId, newRootPointer);
 
             await InsertNonFull(newRoot, key, value);
@@ -93,8 +108,12 @@ public class InsertOperation<TK, TV>(
 
             rightLeaf.NextLeaf = leftLeaf.NextLeaf;
             var rightPointer = await session.WriteAsync(rightLeaf);
+            
+            // Flush right leaf to get actual pointer before referencing it
+            await session.FlushAsync();
+            rightPointer = rightLeaf.Pointer;
+            
             leftLeaf.NextLeaf = rightPointer;
-
             await session.WriteAsync(leftLeaf);
 
             parent.InsertChild(rightKeys[0], rightPointer);
@@ -107,11 +126,18 @@ public class InsertOperation<TK, TV>(
 
             var rightKeys = leftInternal.SplitAndGetKeys(out var rightChildren);
 
-            for (var i = 0; i < rightKeys.Length; i++) rightInternal.InsertChild(rightKeys[i], rightChildren[i + 1]);
+            // First set the leftmost child
             rightInternal.SetChild(0, rightChildren[0]);
+            
+            // Then insert keys with their right children
+            for (var i = 0; i < rightKeys.Length; i++) rightInternal.InsertChild(rightKeys[i], rightChildren[i + 1]);
 
             var rightPointer = await session.WriteAsync(rightInternal);
             await session.WriteAsync(leftInternal);
+            
+            // Flush to get actual pointers
+            await session.FlushAsync();
+            rightPointer = rightInternal.Pointer;
 
             var promoteKey = rightKeys.Length > 0 ? rightKeys[0] : default!;
             parent.InsertChild(promoteKey, rightPointer);

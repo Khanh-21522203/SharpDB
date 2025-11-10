@@ -16,6 +16,7 @@ using SharpDB.Storage.Header;
 using SharpDB.Storage.Index;
 using SharpDB.Storage.Page;
 using SharpDB.Storage.Sessions;
+using SharpDB.WAL;
 
 namespace SharpDB;
 
@@ -31,6 +32,7 @@ public class SharpDB : IDisposable
     private readonly ILogger _logger = Log.ForContext<SharpDB>();
     private readonly IPageManager _pageManager;
     private readonly ITransactionManager _transactionManager;
+    private readonly WALManager? _walManager;
 
     public SharpDB(string basePath, EngineConfig? config = null)
     {
@@ -39,9 +41,25 @@ public class SharpDB : IDisposable
 
         Directory.CreateDirectory(basePath);
 
+        // Initialize WAL Manager first (if WAL is enabled)
+        if (_config.EnableWAL)
+        {
+            _walManager = new WALManager(basePath, _config.WALMaxFileSize);
+            
+            // Perform recovery from WAL
+            var recoveryTask = _walManager.RecoverAsync();
+            recoveryTask.Wait(); // Synchronously wait for recovery to complete
+            var recoveryResult = recoveryTask.Result;
+            
+            _logger.Information("WAL recovery completed. Committed: {Committed}, Aborted: {Aborted}, Rolled back: {RolledBack}",
+                recoveryResult.CommittedTransactions, 
+                recoveryResult.AbortedTransactions,
+                recoveryResult.UnfinishedTransactions);
+        }
+
         // Initialize components
         _filePool = new FileHandlerPool(_logger, _config.MaxFileHandles);
-        _pageManager = new PageManager(basePath, _filePool, _config.PageSize);
+        _pageManager = new PageManager(basePath, _filePool, _config.PageSize, _config.Cache.PageCacheSize);
         _dbHeaderManager = new DatabaseHeaderManager(basePath);
         _dbStorage = new DiskPageDatabaseStorageManager(_pageManager, _logger, _dbHeaderManager);
         _indexStorage = new DiskPageFileIndexStorageManager(basePath, _logger, _filePool);
@@ -50,7 +68,7 @@ public class SharpDB : IDisposable
         var versionManager = new VersionManager(_dbStorage);
         var serializer = new JsonObjectSerializer();
 
-        _transactionManager = new TransactionManager(lockManager, versionManager, serializer);
+        _transactionManager = new TransactionManager(lockManager, versionManager, serializer, _walManager);
     }
 
     public void Dispose()
@@ -62,6 +80,7 @@ public class SharpDB : IDisposable
                 disposable.Dispose();
 
         _transactionManager?.Dispose();
+        _walManager?.Dispose();  // Dispose WAL manager to flush pending logs
         _dbStorage?.Dispose();
         _indexStorage?.Dispose();
         _filePool?.Dispose();
@@ -139,6 +158,31 @@ public class SharpDB : IDisposable
     {
         await _dbStorage.FlushAsync();
         await _filePool.FlushAllAsync();
+        _walManager?.Flush();
+    }
+
+    /// <summary>
+    /// Create a checkpoint in WAL
+    /// </summary>
+    public async Task<long> CreateCheckpointAsync()
+    {
+        if (_walManager == null)
+        {
+            _logger.Warning("WAL is not enabled, cannot create checkpoint");
+            return -1;
+        }
+
+        _logger.Information("Creating checkpoint");
+        
+        // Flush all pending changes
+        await FlushAsync();
+        
+        // Create checkpoint in WAL
+        var checkpointLSN = await _walManager.CreateCheckpointAsync();
+        
+        _logger.Information("Checkpoint created at LSN {LSN}", checkpointLSN);
+        
+        return checkpointLSN;
     }
 
     private ISerializer<TType> CreateSerializer<TType>() where TType : IComparable<TType>
@@ -147,6 +191,8 @@ public class SharpDB : IDisposable
         if (type == typeof(long)) return (ISerializer<TType>)new LongSerializer();
         if (type == typeof(int)) return (ISerializer<TType>)new IntSerializer();
         if (type == typeof(string)) return (ISerializer<TType>)new StringSerializer(255);
+        if (type == typeof(DateTime)) return (ISerializer<TType>)new DateTimeSerializer();
+        if (type == typeof(decimal)) return (ISerializer<TType>)new DecimalSerializer();
         // if (type == typeof(Guid)) return (ISerializer<TType>)(object)new GuidSerializer();
         throw new NotSupportedException($"Type {type} not supported as key type");
     }

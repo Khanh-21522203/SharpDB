@@ -36,8 +36,11 @@ public class InternalNode<TK> : TreeNode<TK>
 
     public void SetChild(int index, Pointer pointer)
     {
+        // For internal nodes, we have KeyCount+1 children
+        // So valid indices are 0 to KeyCount (inclusive)
         if (index < 0 || index > KeyCount)
-            throw new ArgumentOutOfRangeException(nameof(index));
+            throw new ArgumentOutOfRangeException(nameof(index), 
+                $"Index {index} is out of range for KeyCount {KeyCount}");
 
         var offset = _childrenOffset + index * Pointer.ByteSize;
         pointer.ToBytes().CopyTo(_data, offset);
@@ -70,9 +73,11 @@ public class InternalNode<TK> : TreeNode<TK>
         if (insertIndex < KeyCount) ShiftRight(insertIndex);
 
         // Insert key and child
+        // Note: We need to increment KeyCount first to allow SetChild at the new position
+        var oldKeyCount = KeyCount;
+        KeyCount++;
         SetKeyAt(insertIndex, key);
         SetChild(insertIndex + 1, childPointer);
-        KeyCount++;
     }
 
     public TK[] SplitAndGetKeys(out Pointer[] rightChildren)
@@ -96,6 +101,32 @@ public class InternalNode<TK> : TreeNode<TK>
         KeyCount = midPoint;
 
         return rightKeys;
+    }
+
+    /// <summary>
+    /// Merge separator key and all keys/children from another internal node into this one.
+    /// Does NOT check capacity - caller must ensure there's enough space.
+    /// </summary>
+    public void MergeFrom(TK separatorKey, InternalNode<TK> other)
+    {
+        var startIndex = KeyCount;
+        
+        // Add separator key
+        SetKeyAt(startIndex, separatorKey);
+        KeyCount++; // Increment so we can set child at startIndex + 1
+        
+        // Copy leftmost child from other node
+        SetChild(startIndex + 1, other.GetChild(0));
+        
+        // Copy all keys and children from other node
+        for (var i = 0; i < other.KeyCount; i++)
+        {
+            SetKeyAt(startIndex + 1 + i, other.GetKeyAt(i));
+            KeyCount++; // Increment for each key added
+            SetChild(startIndex + 2 + i, other.GetChild(i + 1));
+        }
+        
+        MarkModified();
     }
 
     public override bool IsFull()

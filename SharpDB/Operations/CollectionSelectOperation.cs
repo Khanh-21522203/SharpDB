@@ -20,11 +20,22 @@ public class CollectionSelectOperation<T, TKey>(
     public async Task ExecuteAsync()
     {
         // Look up pointer in primary index
-        var pointer = await primaryIndex.GetAsync(primaryKey);
-        if (pointer == null)
+        var pointerNullable = await primaryIndex.GetAsync(primaryKey);
+        // For Pointer? (nullable struct), check if it's null or has invalid position
+        if (pointerNullable == null || pointerNullable is { Position: <= 0 })
         {
             Result = null;
             return;
+        }
+        
+        // Get the actual pointer value
+        var pointer = (DataStructures.Pointer)pointerNullable;
+
+        // Debug: Check what type of pointer we got from the index
+        if (pointer.Type != DataStructures.Pointer.TypeData)
+        {
+            // The pointer from index is wrong type - this should not happen
+            throw new InvalidOperationException($"Expected TypeData pointer from index but got type {pointer.Type}");
         }
 
         // Read data from storage using pointer

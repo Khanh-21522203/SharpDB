@@ -1,9 +1,12 @@
 using SharpDB.Core.Abstractions.Index;
+using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.DataStructures;
 
 namespace SharpDB.Index.Node;
 
 public class NodeFactory<TK, TV>(
+    ISerializer<TK> keySerializer,
+    ISerializer<TV> valueSerializer,
     IIndexBinaryObjectFactory<TK> keyFactory,
     IIndexBinaryObjectFactory<TV> valueFactory,
     int degree)
@@ -13,19 +16,23 @@ public class NodeFactory<TK, TV>(
     {
         var isLeaf = (bytes[0] & TreeNode<TK>.TypeLeafBit) != 0;
 
-        if (isLeaf) return new LeafNode<TK, TV>(bytes, degree, keyFactory, valueFactory);
+        if (isLeaf) return new LeafNode<TK, TV>(bytes, keySerializer, valueSerializer, degree);
 
-        return new InternalNode<TK>(bytes, keyFactory, degree);
+        return new InternalNode<TK>(bytes, keySerializer, degree);
     }
 
     public LeafNode<TK, TV> CreateLeaf()
     {
-        return new LeafNode<TK, TV>(degree, keyFactory, valueFactory);
+        var nodeSize = GetLeafNodeSize();
+        var data = new byte[nodeSize];
+        return new LeafNode<TK, TV>(data, keySerializer, valueSerializer, degree);
     }
 
     public InternalNode<TK> CreateInternal()
     {
-        return new InternalNode<TK>(keyFactory, degree);
+        var nodeSize = GetInternalNodeSize();
+        var data = new byte[nodeSize];
+        return new InternalNode<TK>(data, keySerializer, degree);
     }
 
     public int GetLeafNodeSize()

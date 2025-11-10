@@ -40,7 +40,7 @@ public class DiskPageDatabaseStorageManager(
             _activePages[collectionId] = page;
 
             // Update current page position
-            _currentPagePositions[collectionId] = page.PageNumber * 4096; // Assuming 4KB pages
+            _currentPagePositions[collectionId] = page.PageNumber * 8192; // Match config PageSize
 
             // Retry allocation
             dbObject = page.AllocateObject(schemeId, collectionId, version, data);
@@ -53,7 +53,7 @@ public class DiskPageDatabaseStorageManager(
         var pointer = new Pointer(
             Pointer.TypeData,
             _currentPagePositions[collectionId] + dbObject.Begin,
-            0
+            collectionId  // Use collectionId as chunk
         );
 
         logger.Debug("Stored {Size} bytes at {Pointer} for collection {CollectionId}",
@@ -68,12 +68,23 @@ public class DiskPageDatabaseStorageManager(
             throw new ArgumentException("Pointer must be of TypeData", nameof(pointer));
 
         // Calculate page number and offset
-        var pageSize = 4096;
+        var pageSize = 8192; // Should match config PageSize
         var pageNumber = (int)(pointer.Position / pageSize);
         var offsetInPage = (int)(pointer.Position % pageSize);
-
-        // Load page
-        var page = await pageManager.LoadPageAsync(pointer.Chunk, pageNumber * pageSize);
+        
+        // First check if the page is in our active pages (not yet written to disk)
+        Page.Page page;
+        if (_activePages.TryGetValue(pointer.Chunk, out var activePage) && 
+            activePage.PageNumber == pageNumber)
+        {
+            // Use the active page directly
+            page = activePage;
+        }
+        else
+        {
+            // Load page from disk
+            page = await pageManager.LoadPageAsync(pointer.Chunk, pageNumber * pageSize);
+        }
 
         // Get object at offset
         try
@@ -166,9 +177,12 @@ public class DiskPageDatabaseStorageManager(
 
     public async Task FlushAsync()
     {
+        // Write ALL active pages to disk, not just modified ones
         var flushTasks = _activePages.Select(async kvp =>
         {
-            if (kvp.Value.Modified) await pageManager.WritePageAsync(kvp.Key, kvp.Value);
+            await pageManager.WritePageAsync(kvp.Key, kvp.Value);
+            logger.Debug("Flushed page {PageNumber} for collection {CollectionId}", 
+                kvp.Value.PageNumber, kvp.Key);
         });
 
         await Task.WhenAll(flushTasks);
@@ -202,7 +216,7 @@ public class DiskPageDatabaseStorageManager(
         // Allocate new page
         page = await pageManager.AllocatePageAsync(collectionId);
         _activePages[collectionId] = page;
-        _currentPagePositions[collectionId] = page.PageNumber * 4096;
+        _currentPagePositions[collectionId] = page.PageNumber * 8192; // Match config PageSize
 
         return page;
     }

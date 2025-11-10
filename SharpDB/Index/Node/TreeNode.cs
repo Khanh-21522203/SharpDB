@@ -31,6 +31,7 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
     //TODO: Need to consider as Pointer?
     public Pointer Pointer { get; set; }
     public bool Modified { get; private set; }
+    public int Degree => _degree;
 
     public abstract bool IsLeaf { get; }
 
