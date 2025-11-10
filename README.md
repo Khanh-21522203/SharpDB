@@ -53,45 +53,31 @@
     - Self-balancing tree structure
     - O(log n) search, insert, delete operations
     - Configurable tree degree
-    - Leaf node implementation
+    - Leaf node and internal node implementation
+    - Primary key indexing
 
-- **Basic Storage**
-    - Page-based storage management
-    - File handler pooling
-    - Binary serialization
-    - JSON object serialization
+- **Storage Layer**
+    - Page-based storage management (4KB default page size)
+    - File handler pooling for efficient I/O
+    - LRU page caching (2000 pages default)
+    - Binary and JSON object serialization
+    - Pointer-based storage references
+
+- **Write-Ahead Logging (WAL)**
+    - ACID transaction support
+    - Crash recovery with 3-phase recovery (Analysis, REDO, UNDO)
+    - Group commit optimization (100ms flush interval)
+    - Automatic checkpointing
+    - Log rotation (10MB default file size)
 
 - **Collection Management**
-    - Create/Get collections
-    - Schema definition
-    - Primary key support
-    - Basic CRUD operations
+    - Schema-based collections
+    - Primary key support (long, int, string)
+    - Field types: Int, Long, String, Bool, Double, DateTime
+    - Basic CRUD operations (Insert, Select, Update, Delete)
+    - Scan and Count operations
 
-- **Transaction Support**
-    - Basic transaction manager
-    - Lock manager (partial)
-    - Version manager (basic)
 
-- **Index Features**
-    - Range queries
-    - Secondary indexes
-
-### 📋 Planned Features
-
-- **ACID Compliance**
-    - Full transaction rollback
-    - Crash recovery
-    - Write-ahead logging
-
-- **MVCC (Multi-Version Concurrency Control)**
-    - Non-blocking reads
-    - Snapshot isolation
-    - Version chain management
-
-- **Advanced Querying**
-    - SQL-like query language
-    - Query optimization
-    - Join operations
 
 ### Storage Features
 
@@ -472,75 +458,32 @@ var db = new SharpDB("./mydb", config);
 
 ---
 
-## 📁 Project Structure
+## 📊 Performance Benchmarks
 
-```
-SharpDB/
-├── SharpDB/                        # Main project
-│   ├── Core/                      # Core abstractions and interfaces
-│   │   ├── Abstractions/          # Interfaces for all components
-│   │   │   ├── Concurrency/       # Transaction & Lock interfaces
-│   │   │   ├── Index/             # Index interfaces
-│   │   │   ├── Operations/        # Operation interfaces
-│   │   │   ├── Serialization/     # Serialization interfaces
-│   │   │   ├── Sessions/          # IO Session interfaces
-│   │   │   └── Storage/           # Storage interfaces
-│   │   ├── Constants/             # System constants
-│   │   └── Exceptions/            # Custom exceptions
-│   │
-│   ├── DataStructures/            # Core data structures
-│   │   ├── BinaryList.cs          # Binary list implementation
-│   │   ├── Bitmap.cs              # Bitmap for null tracking
-│   │   ├── CacheId.cs             # Cache identifier
-│   │   ├── KVSize.cs              # Key-Value size structure
-│   │   ├── LruCache.cs            # LRU cache implementation
-│   │   └── Pointer.cs             # Storage pointer
-│   │
-│   ├── Engine/                    # Database engine core
-│   │   ├── CollectionManager.cs   # Collection management
-│   │   ├── Field.cs               # Field definition
-│   │   ├── Schema.cs              # Schema definition
-│   │   ├── Concurrency/           # Concurrency control
-│   │   └── Transaction/           # Transaction management
-│   │
-│   ├── Index/                     # Indexing implementation
-│   │   ├── BinaryObject/          # Binary serialization
-│   │   ├── Manager/               # Index managers (BPlusTreeIndexManager)
-│   │   ├── Node/                  # B+ Tree nodes
-│   │   ├── Operations/            # Index operations
-│   │   └── Session/               # Index IO sessions
-│   │
-│   ├── Operations/                # CRUD operations
-│   │   └── Collection operations
-│   │
-│   ├── Serialization/             # Serialization layer
-│   │   ├── Object serializers
-│   │   └── Primitive type serializers
-│   │
-│   ├── Storage/                   # Storage management
-│   │   ├── Database/              # Database storage
-│   │   ├── FilePool/              # File handler pooling
-│   │   ├── Header/                # Database headers
-│   │   ├── Index/                 # Index storage
-│   │   ├── Page/                  # Page management
-│   │   └── Sessions/              # Storage sessions
-│   │
-│   ├── Configuration/             # Configuration
-│   │   └── EngineConfig.cs        # Engine configuration
-│   │
-│   ├── SharpDB.cs                 # Main API entry point
-│   └── Program.cs                 # Entry point
-│
-├── SharpDB.Test/                  # Unit tests
-│   ├── DataStructures/            # Data structure tests
-│   │   └── PointerTest.cs
-│   └── UnitTest1.cs
-│
-├── .gitignore
-├── README.md                      # This file
-└── SharpDB.sln                    # Solution file
+A comprehensive benchmark suite has been created in `SharpDB.SimpleBenchmark/` to measure database performance.
+
+### Benchmark Operations
+
+- **Insert**: Bulk insert performance with 1,000 records
+- **Select**: Primary key lookup performance
+- **Update**: In-place update operations
+- **Scan**: Sequential iteration through all records
+- **Count**: Collection size query
+- **Delete**: Record deletion performance
+
+### Running Benchmarks
+
+```bash
+# Build and run benchmark suite
+dotnet run --project SharpDB.Benchmark/SharpDB.Benchmark.csproj --configuration Release
 ```
 
+| Operation | Records | Time (ms) | Throughput (ops/sec) |
+|-----------|---------|-----------|-----------------|
+| **INSERT** | 1,000 | 46.76 | **21,388** |
+| **SELECT** | 1,000 | 11.04 | **90,572**|
+| **UPDATE** | 1,000 | 6.52 | **153,480** |
+| **DELETE** | 100 | 12.49 | **8,008** |
 ---
 
 
