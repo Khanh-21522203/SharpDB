@@ -66,7 +66,7 @@ public class FileHandlerPool : IFileHandlerPool
                             collectionId
                         );
 
-                        existingHandle.Dispose();
+                        await existingHandle.DisposeAsync();
                         _handles.TryRemove(filePath, out _);
                     }
                     else
@@ -137,23 +137,23 @@ public class FileHandlerPool : IFileHandlerPool
         foreach (var kvp in toRemove)
         {
             if (_handles.TryRemove(kvp.Key, out var handle))
-            try
-            {
-                await handle.FlushAsync();
-                handle.Dispose();
+                try
+                {
+                    await handle.FlushAsync();
+                    await handle.DisposeAsync();
 
-                _logger.Debug(
-                    "Released handle for collection {CollectionId}",
-                    collectionId
-                );
-            }
-            catch (Exception ex)
-            {
-                _logger.Error(ex,
-                    "Error releasing handle for collection {CollectionId}",
-                    collectionId
-                );
-            }
+                    _logger.Debug(
+                        "Released handle for collection {CollectionId}",
+                        collectionId
+                    );
+                }
+                catch (Exception ex)
+                {
+                    _logger.Error(ex,
+                        "Error releasing handle for collection {CollectionId}",
+                        collectionId
+                    );
+                }
             
             // Remove associated lock
             if (_locks.TryRemove(kvp.Key, out var semaphore)) semaphore.Dispose();

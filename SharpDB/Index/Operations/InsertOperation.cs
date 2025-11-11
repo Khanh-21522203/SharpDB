@@ -124,7 +124,7 @@ public class InsertOperation<TK, TV>(
             var leftInternal = (InternalNode<TK>)child;
             var rightInternal = nodeFactory.CreateInternalNode();
 
-            var rightKeys = leftInternal.SplitAndGetKeys(out var rightChildren);
+            var (rightKeys, middleKey, rightChildren) = leftInternal.SplitAndGetKeys();
 
             // First set the leftmost child
             rightInternal.SetChild(0, rightChildren[0]);
@@ -139,8 +139,8 @@ public class InsertOperation<TK, TV>(
             await session.FlushAsync();
             rightPointer = rightInternal.Pointer;
 
-            var promoteKey = rightKeys.Length > 0 ? rightKeys[0] : default!;
-            parent.InsertChild(promoteKey, rightPointer);
+            // Use middleKey (not rightKeys[0]) to promote to parent
+            parent.InsertChild(middleKey, rightPointer);
             await session.WriteAsync(parent);
         }
     }

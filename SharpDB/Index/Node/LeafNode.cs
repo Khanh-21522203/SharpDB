@@ -125,6 +125,7 @@ public class LeafNode<TK, TV> : TreeNode<TK>
     {
         var midPoint = KeyCount / 2;
         var rightCount = KeyCount - midPoint;
+        var oldKeyCount = KeyCount;
 
         var rightKeys = new TK[rightCount];
         var rightValues = new TV[rightCount];
@@ -138,6 +139,23 @@ public class LeafNode<TK, TV> : TreeNode<TK>
 
         // Truncate this node
         KeyCount = midPoint;
+
+        // Clear ghost data: Zero out keys and values that moved to right node
+        // This prevents confusion during debugging and guards against bounds checking bugs
+        var keySize = _keySerializer.Size;
+        var valueSize = _valueSerializer.Size;
+        for (var i = midPoint; i < oldKeyCount; i++)
+        {
+            // Clear key
+            var keyOffset = _keysOffset + i * keySize;
+            Array.Clear(_data, keyOffset, keySize);
+            
+            // Clear value
+            var valueOffset = _valuesOffset + i * valueSize;
+            Array.Clear(_data, valueOffset, valueSize);
+        }
+
+        MarkModified();
 
         return (rightKeys, rightValues);
     }

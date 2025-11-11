@@ -193,6 +193,9 @@ public class DeleteOperation<TK, TV>(
 
             await session.WriteAsync(leftLeaf);
             await session.WriteAsync(parent);
+            
+            // Free the merged node to prevent memory leak
+            await storage.RemoveNodeAsync(indexId, childLeaf.Pointer);
         }
         else
         {
@@ -218,6 +221,9 @@ public class DeleteOperation<TK, TV>(
 
             await session.WriteAsync(leftInternal);
             await session.WriteAsync(parent);
+            
+            // Free the merged node to prevent memory leak
+            await storage.RemoveNodeAsync(indexId, childInternal.Pointer);
         }
     }
 
@@ -248,6 +254,9 @@ public class DeleteOperation<TK, TV>(
 
             await session.WriteAsync(childLeaf);
             await session.WriteAsync(parent);
+            
+            // Free the merged node to prevent memory leak
+            await storage.RemoveNodeAsync(indexId, rightLeaf.Pointer);
         }
         else
         {
@@ -273,6 +282,9 @@ public class DeleteOperation<TK, TV>(
 
             await session.WriteAsync(childInternal);
             await session.WriteAsync(parent);
+            
+            // Free the merged node to prevent memory leak
+            await storage.RemoveNodeAsync(indexId, rightInternal.Pointer);
         }
     }
 

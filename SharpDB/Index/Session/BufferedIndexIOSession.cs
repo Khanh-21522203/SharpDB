@@ -49,7 +49,7 @@ public class BufferedIndexIOSession<TK>(
         {
             var bytes = node.ToBytes();
 
-            if (node.Pointer!.Position == -1)
+            if (node.Pointer.Position == -1)
             {
                 var result = await storage.WriteNewNodeAsync(indexId, bytes);
                 node.Pointer = result.Pointer;

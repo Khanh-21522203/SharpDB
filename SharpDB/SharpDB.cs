@@ -30,7 +30,6 @@ public class SharpDB : IDisposable
     private readonly IFileHandlerPool _filePool;
     private readonly IIndexStorageManager _indexStorage;
     private readonly ILogger _logger = Log.ForContext<SharpDB>();
-    private readonly IPageManager _pageManager;
     private readonly ITransactionManager _transactionManager;
     private readonly WALManager? _walManager;
 
@@ -59,9 +58,9 @@ public class SharpDB : IDisposable
 
         // Initialize components
         _filePool = new FileHandlerPool(_logger, _config);
-        _pageManager = new PageManager(basePath, _filePool, _config.PageSize, _config.Cache.PageCacheSize);
+        IPageManager pageManager = new PageManager(basePath, _filePool, _config.PageSize, _config.Cache.PageCacheSize);
         _dbHeaderManager = new DatabaseHeaderManager(basePath);
-        _dbStorage = new DiskPageDatabaseStorageManager(_pageManager, _logger, _dbHeaderManager, _config);
+        _dbStorage = new DiskPageDatabaseStorageManager(pageManager, _logger, _dbHeaderManager, _config);
         _indexStorage = new DiskPageFileIndexStorageManager(basePath, _logger, _filePool);
 
         var lockManager = new LockManager();
@@ -178,11 +177,11 @@ public class SharpDB : IDisposable
         await FlushAsync();
         
         // Create checkpoint in WAL
-        var checkpointLSN = await _walManager.CreateCheckpointAsync();
+        var checkpointLsn = await _walManager.CreateCheckpointAsync();
         
-        _logger.Information("Checkpoint created at LSN {LSN}", checkpointLSN);
+        _logger.Information("Checkpoint created at LSN {LSN}", checkpointLsn);
         
-        return checkpointLSN;
+        return checkpointLsn;
     }
 
     private ISerializer<TType> CreateSerializer<TType>() where TType : IComparable<TType>
@@ -193,7 +192,7 @@ public class SharpDB : IDisposable
         if (type == typeof(string)) return (ISerializer<TType>)new StringSerializer(255);
         if (type == typeof(DateTime)) return (ISerializer<TType>)new DateTimeSerializer();
         if (type == typeof(decimal)) return (ISerializer<TType>)new DecimalSerializer();
-        // if (type == typeof(Guid)) return (ISerializer<TType>)(object)new GuidSerializer();
+        if (type == typeof(Guid)) return (ISerializer<TType>)(object)new GuidSerializer();
         throw new NotSupportedException($"Type {type} not supported as key type");
     }
 }

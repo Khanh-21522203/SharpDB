@@ -62,10 +62,15 @@ public class InternalNode<TK> : TreeNode<TK>
         return GetChild(index);
     }
 
+    /// <summary>
+    ///     Insert a new child pointer at the correct position.
+    ///     Note: Caller must ensure node is not full before calling this method.
+    ///     If node is full, it should be split first (handled by InsertOperation).
+    /// </summary>
     public void InsertChild(TK key, Pointer childPointer)
     {
         if (IsFull())
-            throw new InvalidOperationException("Node is full");
+            throw new InvalidOperationException("Node is full. Must split before inserting.");
 
         var insertIndex = FindKeyIndex(key);
 
@@ -74,19 +79,23 @@ public class InternalNode<TK> : TreeNode<TK>
 
         // Insert key and child
         // Note: We need to increment KeyCount first to allow SetChild at the new position
-        var oldKeyCount = KeyCount;
         KeyCount++;
         SetKeyAt(insertIndex, key);
         SetChild(insertIndex + 1, childPointer);
     }
 
-    public TK[] SplitAndGetKeys(out Pointer[] rightChildren)
+    /// <summary>
+    ///     Split internal node into left (this) and right (returned).
+    ///     Returns: (rightKeys, middleKey to promote, rightChildren)
+    /// </summary>
+    public (TK[] rightKeys, TK middleKey, Pointer[] rightChildren) SplitAndGetKeys()
     {
         var midPoint = KeyCount / 2;
         var rightCount = KeyCount - midPoint - 1; // -1 because mid key goes up
+        var oldKeyCount = KeyCount;
 
         var rightKeys = new TK[rightCount];
-        rightChildren = new Pointer[rightCount + 1];
+        var rightChildren = new Pointer[rightCount + 1];
 
         // Copy right keys (excluding middle)
         for (var i = 0; i < rightCount; i++) rightKeys[i] = GetKeyAt(midPoint + 1 + i);
@@ -94,13 +103,29 @@ public class InternalNode<TK> : TreeNode<TK>
         // Copy right children
         for (var i = 0; i <= rightCount; i++) rightChildren[i] = GetChild(midPoint + 1 + i);
 
-        // Middle key to promote
+        // Middle key to promote to parent
         var middleKey = GetKeyAt(midPoint);
 
         // Truncate this node
         KeyCount = midPoint;
 
-        return rightKeys;
+        // Clear ghost data: Zero out keys and children that moved to right node
+        // This prevents confusion during debugging and guards against bounds checking bugs
+        var keySize = _keySerializer.Size;
+        for (var i = midPoint; i < oldKeyCount; i++)
+        {
+            // Clear key
+            var keyOffset = _keysOffset + i * keySize;
+            Array.Clear(_data, keyOffset, keySize);
+            
+            // Clear child pointer (note: child[i+1] corresponds to key[i])
+            var childOffset = _childrenOffset + (i + 1) * Pointer.ByteSize;
+            Array.Clear(_data, childOffset, Pointer.ByteSize);
+        }
+
+        MarkModified();
+
+        return (rightKeys, middleKey, rightChildren);
     }
 
     /// <summary>

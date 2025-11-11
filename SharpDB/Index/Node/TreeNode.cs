@@ -28,7 +28,8 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
     protected readonly int _degree = degree;
     protected readonly ISerializer<TK> _keySerializer = keySerializer;
 
-    //TODO: Need to consider as Pointer?
+    // Keep as non-nullable for now - refactoring to Pointer? would require 
+    // extensive changes across InternalNode, LeafNode, and all operations
     public Pointer Pointer { get; set; }
     public bool Modified { get; private set; }
     public int Degree => _degree;
@@ -94,6 +95,10 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
 
     public int FindKeyIndex(TK key)
     {
+        // Standard binary search - returns lower bound (first position >= key)
+        if (KeyCount == 0)
+            return 0;
+        
         var left = 0;
         var right = KeyCount - 1;
 
