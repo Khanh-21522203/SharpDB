@@ -1,6 +1,7 @@
 using Serilog;
 using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Concurrency;
+using SharpDB.Core.Abstractions.Index;
 using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
@@ -9,6 +10,7 @@ using SharpDB.Engine.Concurrency;
 using SharpDB.Engine.Transaction;
 using SharpDB.Index.Manager;
 using SharpDB.Index.Node;
+using SharpDB.Index.Session;
 using SharpDB.Serialization;
 using SharpDB.Storage.Database;
 using SharpDB.Storage.FilePool;
@@ -103,14 +105,22 @@ public class SharpDB : IDisposable
             collectionId,
             _config.BTreeDegree);
 
+        // Create index session for range queries
+        var nodeFactory = CreateNodeFactory<TKey>(keySerializer, valueSerializer, _config.BTreeDegree);
+        var indexSession = new BufferedIndexIOSession<TKey>(
+            _indexStorage,
+            nodeFactory,
+            collectionId);
+
         var dataSession = new BufferedDataIOSession(_dbStorage, _config);
 
         var collection = new CollectionManager<T, TKey>(
             collectionId,
             schema,
             dataSession,
-            _indexStorage, // Fixed: was _dbHeaderManager
+            _indexStorage,
             primaryIndex,
+            indexSession,
             keyExtractor
         );
 
@@ -194,5 +204,34 @@ public class SharpDB : IDisposable
         if (type == typeof(decimal)) return (ISerializer<TType>)new DecimalSerializer();
         if (type == typeof(Guid)) return (ISerializer<TType>)(object)new GuidSerializer();
         throw new NotSupportedException($"Type {type} not supported as key type");
+    }
+
+    private INodeFactory<TK, object> CreateNodeFactory<TK>(
+        ISerializer<TK> keySerializer, 
+        ISerializer<Pointer> valueSerializer,
+        int degree) where TK : IComparable<TK>
+    {
+        var factory = new BPlusTreeNodeFactory<TK, Pointer>(keySerializer, valueSerializer, degree);
+        return new ObjectNodeFactoryAdapter<TK>(factory);
+    }
+
+    // Helper adapter to convert INodeFactory<TK, Pointer> to INodeFactory<TK, object>
+    private class ObjectNodeFactoryAdapter<TK>(INodeFactory<TK, Pointer> innerFactory) : INodeFactory<TK, object>
+        where TK : IComparable<TK>
+    {
+        public LeafNode<TK, object> CreateLeafNode()
+        {
+            throw new NotSupportedException("Use DeserializeNode instead");
+        }
+
+        public InternalNode<TK> CreateInternalNode()
+        {
+            throw new NotSupportedException("Use DeserializeNode instead");
+        }
+
+        public TreeNode<TK> DeserializeNode(byte[] data)
+        {
+            return innerFactory.DeserializeNode(data);
+        }
     }
 }

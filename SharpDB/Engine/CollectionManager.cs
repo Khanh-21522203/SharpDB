@@ -5,6 +5,7 @@ using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
 using SharpDB.Index.Manager;
 using SharpDB.Index.Node;
+using SharpDB.Index.Session;
 using SharpDB.Operations;
 using SharpDB.Serialization;
 
@@ -20,12 +21,21 @@ public class CollectionManager<T, TKey>(
     IDataIOSession dataSession,
     IIndexStorageManager indexStorage,
     IUniqueTreeIndexManager<TKey, Pointer> primaryIndex,
+    IIndexIOSession<TKey> indexSession,
     Func<T, TKey> keyExtractor)
     where T : class
     where TKey : IComparable<TKey>
 {
     private readonly Dictionary<string, object> _secondaryIndexes = new();
     private readonly IObjectSerializer _serializer = new BinaryObjectSerializer(schema);
+    
+    // Wrap primary index with queryable decorator for range queries
+    private readonly IUniqueQueryableIndex<TKey, Pointer> _queryableIndex = 
+        new UniqueQueryableIndexDecorator<TKey, Pointer>(
+            primaryIndex, 
+            indexSession, 
+            indexStorage, 
+            collectionId);
 
     public async Task InsertAsync(T record)
     {
@@ -94,6 +104,54 @@ public class CollectionManager<T, TKey>(
     public async Task<int> CountAsync()
     {
         return await primaryIndex.CountAsync();
+    }
+
+    /// <summary>
+    /// Query records within a key range [minKey, maxKey] (inclusive).
+    /// </summary>
+    public async IAsyncEnumerable<T> RangeQueryAsync(TKey minKey, TKey maxKey)
+    {
+        await foreach (var kv in _queryableIndex.RangeAsync(minKey, maxKey))
+        {
+            var dbObject = await dataSession.SelectAsync(kv.Value);
+            if (dbObject != null)
+            {
+                var record = _serializer.Deserialize<T>(dbObject.Data);
+                yield return record;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Query records with keys greater than the specified key.
+    /// </summary>
+    public async IAsyncEnumerable<T> GreaterThanAsync(TKey key)
+    {
+        await foreach (var kv in _queryableIndex.GreaterThanAsync(key))
+        {
+            var dbObject = await dataSession.SelectAsync(kv.Value);
+            if (dbObject != null)
+            {
+                var record = _serializer.Deserialize<T>(dbObject.Data);
+                yield return record;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Query records with keys less than the specified key.
+    /// </summary>
+    public async IAsyncEnumerable<T> LessThanAsync(TKey key)
+    {
+        await foreach (var kv in _queryableIndex.LessThanAsync(key))
+        {
+            var dbObject = await dataSession.SelectAsync(kv.Value);
+            if (dbObject != null)
+            {
+                var record = _serializer.Deserialize<T>(dbObject.Data);
+                yield return record;
+            }
+        }
     }
 
     public async Task FlushAsync()

@@ -3,6 +3,18 @@ using SharpDB.DataStructures;
 
 namespace SharpDB.Index.Manager;
 
+/// <summary>
+/// OBSOLETE: Use NullableKeyIndex&lt;TK, TV&gt; instead for type-safe nullable key support.
+/// 
+/// This class uses object-based keys with hashing, which has several issues:
+/// 1. Not type-safe (uses object?)
+/// 2. Hash collisions possible with GetHashCode()
+/// 3. Stores null values in the same index using bitmap IDs
+/// 
+/// Kept for educational purposes to show design evolution.
+/// See NullableIndexDecorator.cs for the improved generic approach.
+/// </summary>
+[Obsolete("Use NullableKeyIndex<TK, TV> instead. This class demonstrates object-based approach limitations.", false)]
 public class NullableIndexManager<TV>(IUniqueTreeIndexManager<long, TV> innerIndex, int nullBitmapCapacity = 10000)
     : INullableIndex<TV>
 {
