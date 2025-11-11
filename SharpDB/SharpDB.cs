@@ -202,7 +202,7 @@ public class SharpDB : IDisposable
         if (type == typeof(string)) return (ISerializer<TType>)new StringSerializer(255);
         if (type == typeof(DateTime)) return (ISerializer<TType>)new DateTimeSerializer();
         if (type == typeof(decimal)) return (ISerializer<TType>)new DecimalSerializer();
-        if (type == typeof(Guid)) return (ISerializer<TType>)(object)new GuidSerializer();
+        if (type == typeof(Guid)) return (ISerializer<TType>)new GuidSerializer();
         throw new NotSupportedException($"Type {type} not supported as key type");
     }
 
@@ -212,26 +212,7 @@ public class SharpDB : IDisposable
         int degree) where TK : IComparable<TK>
     {
         var factory = new BPlusTreeNodeFactory<TK, Pointer>(keySerializer, valueSerializer, degree);
-        return new ObjectNodeFactoryAdapter<TK>(factory);
-    }
-
-    // Helper adapter to convert INodeFactory<TK, Pointer> to INodeFactory<TK, object>
-    private class ObjectNodeFactoryAdapter<TK>(INodeFactory<TK, Pointer> innerFactory) : INodeFactory<TK, object>
-        where TK : IComparable<TK>
-    {
-        public LeafNode<TK, object> CreateLeafNode()
-        {
-            throw new NotSupportedException("Use DeserializeNode instead");
-        }
-
-        public InternalNode<TK> CreateInternalNode()
-        {
-            throw new NotSupportedException("Use DeserializeNode instead");
-        }
-
-        public TreeNode<TK> DeserializeNode(byte[] data)
-        {
-            return innerFactory.DeserializeNode(data);
-        }
+        // allowCreateInternalNode = false: This is for range query sessions, only deserializes nodes
+        return new ObjectNodeFactoryAdapter<TK, Pointer>(factory, allowCreateInternalNode: false);
     }
 }

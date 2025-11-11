@@ -4,8 +4,6 @@ using SharpDB.Core.Abstractions.Sessions;
 using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
 using SharpDB.Index.Manager;
-using SharpDB.Index.Node;
-using SharpDB.Index.Session;
 using SharpDB.Operations;
 using SharpDB.Serialization;
 
@@ -83,12 +81,27 @@ public class CollectionManager<T, TKey>(
 
     public async Task<bool> DeleteAsync(TKey primaryKey)
     {
+        // For secondary index cleanup, we need the full record
+        // First, retrieve it before deletion
+        T? recordToDelete = null;
+        if (_secondaryIndexes.Count > 0)
+        {
+            recordToDelete = await SelectAsync(primaryKey);
+        }
+
         var op = new CollectionDeleteOperation<TKey>(
             dataSession,
             primaryIndex,
             primaryKey);
 
         await op.ExecuteAsync();
+
+        // Update secondary indexes if deletion was successful
+        if (op.WasDeleted && recordToDelete != null && _secondaryIndexes.Count > 0)
+        {
+            await UpdateSecondaryIndexesAsync(recordToDelete, false);  // isInsert=false for delete
+        }
+
         return op.WasDeleted;
     }
 
@@ -96,8 +109,20 @@ public class CollectionManager<T, TKey>(
     {
         await foreach (var dbObject in dataSession.ScanAsync(collectionId))
         {
+            // Skip deleted objects (soft delete)
+            if (!dbObject.IsAlive)
+                continue;
+
             var record = _serializer.Deserialize<T>(dbObject.Data);
-            yield return record;
+            var key = keyExtractor(record);
+            
+            // Verify record still exists in primary index
+            // (deletes remove from index but may not clean data pages immediately)
+            var pointer = await primaryIndex.GetAsync(key);
+            if (pointer.Position > 0)
+            {
+                yield return record;
+            }
         }
     }
 
@@ -201,15 +226,26 @@ public class CollectionManager<T, TKey>(
     private async Task UpdateSecondaryIndexesAsync(T record, bool isInsert)
     {
         var primaryKey = keyExtractor(record);
-        var pointer = await primaryIndex.GetAsync(primaryKey);
+        
+        if (isInsert)
+        {
+            // For insert: get pointer from primary index
+            var pointer = await primaryIndex.GetAsync(primaryKey);
 
-        // Check if pointer is valid (not null and has actual data)
-        if (pointer is not { Position: > 0 })
-            return;
+            // Check if pointer is valid (not null and has actual data)
+            if (pointer is not { Position: > 0 })
+                return;
 
-        foreach (var (fieldName, indexWrapper) in _secondaryIndexes)
-            // Update secondary index: indexKey → Pointer
-            await ((dynamic)indexWrapper).UpdateAsync(record, pointer, isInsert);
+            foreach (var (fieldName, indexWrapper) in _secondaryIndexes)
+                // Update secondary index: indexKey → Pointer
+                await ((dynamic)indexWrapper).UpdateAsync(record, pointer, isInsert: true);
+        }
+        else
+        {
+            // For delete: remove from secondary indexes
+            foreach (var (fieldName, indexWrapper) in _secondaryIndexes)
+                await ((dynamic)indexWrapper).DeleteAsync(record);
+        }
     }
 
     private ISerializer<TType> CreateSerializer<TType>() where TType : IComparable<TType>
@@ -244,6 +280,22 @@ public class CollectionManager<T, TKey>(
             {
                 var duplicateIndex = (IDuplicateTreeIndexManager<TIndexKey, Pointer>)index;
                 await duplicateIndex.PutAsync(indexKey, pointer);
+            }
+        }
+
+        public async Task DeleteAsync(T record)
+        {
+            var indexKey = indexKeyExtractor(record);
+
+            if (isUnique)
+            {
+                var uniqueIndex = (IUniqueTreeIndexManager<TIndexKey, Pointer>)index;
+                await uniqueIndex.RemoveAsync(indexKey);
+            }
+            else
+            {
+                var duplicateIndex = (IDuplicateTreeIndexManager<TIndexKey, Pointer>)index;
+                await duplicateIndex.RemoveAsync(indexKey);
             }
         }
     }

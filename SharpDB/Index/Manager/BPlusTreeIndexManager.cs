@@ -38,36 +38,29 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         _insertOp = new InsertOperation<TK, TV>(_session, storage, _factory, indexId);
         _deleteOp = new DeleteOperation<TK, TV>(_session, storage, indexId);
     }
+
+    // Constructor with explicit serializers (for custom types like BinaryList)
+    public BPlusTreeIndexManager(
+        IIndexStorageManager storage,
+        int indexId,
+        int degree,
+        ISerializer<TK> keySerializer,
+        ISerializer<TV> valueSerializer)
+    {
+        _storage = storage;
+        _indexId = indexId;
+
+        _factory = new BPlusTreeNodeFactory<TK, TV>(keySerializer, valueSerializer, degree);
+
+        _session = new BufferedIndexIOSession<TK>(storage, CreateObjectNodeFactory(), indexId);
+        _searchOp = new SearchOperation<TK, TV>(_session, storage, indexId);
+        _insertOp = new InsertOperation<TK, TV>(_session, storage, _factory, indexId);
+        _deleteOp = new DeleteOperation<TK, TV>(_session, storage, indexId);
+    }
     
     private INodeFactory<TK, object> CreateObjectNodeFactory()
     {
-        return new ObjectNodeFactoryAdapter<TK, TV>(_factory);
-    }
-    
-    private class ObjectNodeFactoryAdapter<TK2, TV2> : INodeFactory<TK2, object> 
-        where TK2 : IComparable<TK2>
-    {
-        private readonly INodeFactory<TK2, TV2> _innerFactory;
-        
-        public ObjectNodeFactoryAdapter(INodeFactory<TK2, TV2> innerFactory)
-        {
-            _innerFactory = innerFactory;
-        }
-        
-        public LeafNode<TK2, object> CreateLeafNode()
-        {
-            throw new NotSupportedException("Adapter should not create leaf nodes");
-        }
-        
-        public InternalNode<TK2> CreateInternalNode()
-        {
-            return _innerFactory.CreateInternalNode();
-        }
-        
-        public TreeNode<TK2> DeserializeNode(byte[] data)
-        {
-            return _innerFactory.DeserializeNode(data);
-        }
+        return new ObjectNodeFactoryAdapter<TK, TV>(_factory, allowCreateInternalNode: true);
     }
 
     public async Task<TV?> GetAsync(TK key)
@@ -139,22 +132,7 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         if (type == typeof(long)) return (ISerializer<T>)new LongSerializer();
         if (type == typeof(int)) return (ISerializer<T>)new IntSerializer();
         if (type == typeof(string)) return (ISerializer<T>)new StringSerializer(255);
-        if (type == typeof(Pointer)) return (ISerializer<T>)(object)new PointerSerializer();
+        if (type == typeof(Pointer)) return (ISerializer<T>)new PointerSerializer();
         throw new NotSupportedException($"Type {type} not supported");
-    }
-    
-    private class PointerSerializer : ISerializer<Pointer>
-    {
-        public int Size => Pointer.ByteSize;
-
-        public byte[] Serialize(Pointer obj)
-        {
-            return obj.ToBytes();
-        }
-
-        public Pointer Deserialize(byte[] bytes, int offset = 0)
-        {
-            return Pointer.FromBytes(bytes, offset);
-        }
     }
 }

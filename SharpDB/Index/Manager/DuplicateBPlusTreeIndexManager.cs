@@ -27,13 +27,14 @@ public class DuplicateBPlusTreeIndexManager<TK, TV> : IDuplicateTreeIndexManager
         _valueSerializer = valueSerializer;
         var binaryListSerializer = new BinaryListSerializer<TV>(valueSerializer);
 
-        //TODO: binaryListSerializer
-
         // Create inner unique index with BinaryList as value type
+        // Pass serializers to avoid CreateSerializer() call
         _inner = new BPlusTreeIndexManager<TK, BinaryList<TV>>(
             storage,
             indexId,
-            degree);
+            degree,
+            keySerializer,
+            binaryListSerializer);
     }
 
     // IDuplicateTreeIndexManager methods

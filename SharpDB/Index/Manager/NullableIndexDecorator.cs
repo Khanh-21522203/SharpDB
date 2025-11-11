@@ -10,23 +10,15 @@ namespace SharpDB.Index.Manager;
 /// NOTE: This does NOT implement IUniqueTreeIndexManager due to C# nullable constraints.
 /// Use as a standalone wrapper with manual key handling.
 /// </summary>
-public class NullableKeyIndex<TK, TV>
+public class NullableKeyIndex<TK, TV>(
+    IUniqueTreeIndexManager<TK, TV> innerIndex,
+    int initialNullCapacity = 1000)
     where TK : struct, IComparable<TK>
 {
-    private readonly IUniqueTreeIndexManager<TK, TV> _innerIndex;
-    private readonly Bitmap _nullBitmap;
-    private readonly Dictionary<int, TV> _nullValues;
-    private int _nextNullId;
-
-    public NullableKeyIndex(
-        IUniqueTreeIndexManager<TK, TV> innerIndex,
-        int nullCapacity = 1000)
-    {
-        _innerIndex = innerIndex;
-        _nullBitmap = new Bitmap(nullCapacity);
-        _nullValues = new Dictionary<int, TV>();
-        _nextNullId = 0;
-    }
+    private Bitmap _nullBitmap = new(initialNullCapacity);
+    private readonly Dictionary<int, TV> _nullValues = new();
+    private int _nextNullId = 0;
+    private int _currentCapacity = initialNullCapacity;
 
     public async Task<TV?> GetAsync(TK? key)
     {
@@ -41,7 +33,7 @@ public class NullableKeyIndex<TK, TV>
             return default;
         }
 
-        return await _innerIndex.GetAsync(key.Value);
+        return await innerIndex.GetAsync(key.Value);
     }
 
     public async Task PutAsync(TK? key, TV value)
@@ -50,13 +42,48 @@ public class NullableKeyIndex<TK, TV>
         {
             // Store in null tracking
             var id = Interlocked.Increment(ref _nextNullId);
+            
+            // Resize bitmap if needed
+            if (id >= _currentCapacity)
+            {
+                ResizeBitmap(id);
+            }
+            
             _nullBitmap.Set(id);
             _nullValues[id] = value;
         }
         else
         {
-            await _innerIndex.PutAsync(key.Value, value);
+            await innerIndex.PutAsync(key.Value, value);
         }
+    }
+    
+    /// <summary>
+    /// Dynamically resize bitmap when capacity exceeded
+    /// </summary>
+    private void ResizeBitmap(int requiredId)
+    {
+        // Double capacity until it fits
+        var newCapacity = _currentCapacity;
+        while (newCapacity <= requiredId)
+        {
+            newCapacity *= 2;
+        }
+        
+        // Create new bitmap with larger capacity
+        var newBitmap = new Bitmap(newCapacity);
+        
+        // Copy existing bits
+        for (int i = 0; i < _currentCapacity; i++)
+        {
+            if (_nullBitmap.IsSet(i))
+            {
+                newBitmap.Set(i);
+            }
+        }
+        
+        _nullBitmap = newBitmap;
+        _currentCapacity = newCapacity;
     }
 
     public async Task<bool> RemoveAsync(TK? key)
@@ -77,7 +104,7 @@ public class NullableKeyIndex<TK, TV>
             return removed;
         }
 
-        return await _innerIndex.RemoveAsync(key.Value);
+        return await innerIndex.RemoveAsync(key.Value);
     }
 
     public async Task<bool> ContainsKeyAsync(TK? key)
@@ -92,12 +119,12 @@ public class NullableKeyIndex<TK, TV>
             return false;
         }
 
-        return await _innerIndex.ContainsKeyAsync(key.Value);
+        return await innerIndex.ContainsKeyAsync(key.Value);
     }
 
     public async Task<int> CountAsync()
     {
-        var count = await _innerIndex.CountAsync();
+        var count = await innerIndex.CountAsync();
         
         // Add null entries
         foreach (var id in _nullValues.Keys)
@@ -111,12 +138,12 @@ public class NullableKeyIndex<TK, TV>
 
     public Task FlushAsync()
     {
-        return _innerIndex.FlushAsync();
+        return innerIndex.FlushAsync();
     }
 
     public void Dispose()
     {
-        _innerIndex.Dispose();
+        innerIndex.Dispose();
     }
 
     /// <summary>
