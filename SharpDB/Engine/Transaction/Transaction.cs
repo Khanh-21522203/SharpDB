@@ -18,21 +18,57 @@ public class Transaction(
     public long TransactionId { get; } = txnId;
     public long StartTimestamp { get; } = startTimestamp;
     public IsolationLevel IsolationLevel { get; } = level;
+    
+    // Track locks for RepeatableRead - need to hold them until commit
+    private readonly HashSet<ResourceId> _heldReadLocks = new();
 
     public async Task<T?> ReadAsync<T>(Pointer pointer) where T : class
     {
-        // Acquire shared lock
         var resourceId = new ResourceId("record", pointer.ToString());
         var txnId = new TransactionId(TransactionId);
+        
+        // Handle locking based on isolation level
+        switch (IsolationLevel)
+        {
+            case IsolationLevel.ReadUncommitted:
+                // No locks for dirty reads
+                break;
+                
+            case IsolationLevel.ReadCommitted:
+                // Acquire lock but release immediately after reading
+                await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+                break;
+                
+            case IsolationLevel.RepeatableRead:
+                // Acquire lock and hold until commit
+                await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+                _heldReadLocks.Add(resourceId);
+                break;
+                
+            case IsolationLevel.Serializable:
+                // For now, same as RepeatableRead but with range locks (TODO)
+                await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+                _heldReadLocks.Add(resourceId);
+                break;
+        }
 
-        await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+        try
+        {
+            // Read version
+            var version = await versionManager.ReadAsync(pointer, StartTimestamp);
+            if (version == null)
+                return null;
 
-        // Read version
-        var version = await versionManager.ReadAsync(pointer, StartTimestamp);
-        if (version == null)
-            return null;
-
-        return serializer.Deserialize<T>(version.Data);
+            return serializer.Deserialize<T>(version.Data);
+        }
+        finally
+        {
+            // Release lock immediately for ReadCommitted
+            if (IsolationLevel == IsolationLevel.ReadCommitted)
+            {
+                await lockManager.ReleaseLockAsync(resourceId, txnId);
+            }
+        }
     }
 
     public async Task<Pointer> WriteAsync<T>(Pointer? pointer, T data) where T : class
