@@ -58,10 +58,10 @@ public class SharpDB : IDisposable
         }
 
         // Initialize components
-        _filePool = new FileHandlerPool(_logger, _config.MaxFileHandles);
+        _filePool = new FileHandlerPool(_logger, _config);
         _pageManager = new PageManager(basePath, _filePool, _config.PageSize, _config.Cache.PageCacheSize);
         _dbHeaderManager = new DatabaseHeaderManager(basePath);
-        _dbStorage = new DiskPageDatabaseStorageManager(_pageManager, _logger, _dbHeaderManager);
+        _dbStorage = new DiskPageDatabaseStorageManager(_pageManager, _logger, _dbHeaderManager, _config);
         _indexStorage = new DiskPageFileIndexStorageManager(basePath, _logger, _filePool);
 
         var lockManager = new LockManager();
@@ -104,7 +104,7 @@ public class SharpDB : IDisposable
             collectionId,
             _config.BTreeDegree);
 
-        var dataSession = new BufferedDataIOSession(_dbStorage);
+        var dataSession = new BufferedDataIOSession(_dbStorage, _config);
 
         var collection = new CollectionManager<T, TKey>(
             collectionId,

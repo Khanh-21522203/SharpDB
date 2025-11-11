@@ -7,7 +7,7 @@ namespace SharpDB.Storage.Page;
 public class DBObject
 {
     public const byte AliveFlag = 0x01;
-    public const int MetaBytes = 17; // Flag(1) + SchemeId(4) + CollectionId(4) + Version(4) + DataSize(4)
+    public const int MetaBytes = 13; // Flag(1) + SchemeId(4) + Version(4) + DataSize(4)
 
     private readonly byte[] _wrappedData;
 
@@ -31,9 +31,9 @@ public class DBObject
 
     // Metadata accessors
     public int SchemeId => BitConverter.ToInt32(_wrappedData, Begin + 1);
-    public int CollectionId => BitConverter.ToInt32(_wrappedData, Begin + 5);
-    public int Version => BitConverter.ToInt32(_wrappedData, Begin + 9);
-    public int DataSize => BitConverter.ToInt32(_wrappedData, Begin + 13);
+    public int CollectionId => Page.CollectionId; // Now stored in Page header
+    public int Version => BitConverter.ToInt32(_wrappedData, Begin + 5);
+    public int DataSize => BitConverter.ToInt32(_wrappedData, Begin + 9);
     public bool IsAlive => (_wrappedData[Begin] & AliveFlag) == AliveFlag;
 
     /// <summary>
@@ -84,6 +84,6 @@ public class DBObject
 
     private void SetSize(int size)
     {
-        BitConverter.GetBytes(size).CopyTo(_wrappedData, Begin + 13);
+        BitConverter.GetBytes(size).CopyTo(_wrappedData, Begin + 9);
     }
 }

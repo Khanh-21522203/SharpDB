@@ -6,17 +6,18 @@ namespace SharpDB.Storage.Page;
 /// </summary>
 public class Page : IDisposable
 {
-    public const int HeaderSize = 8; // PageNumber(4) + UsedSpace(4)
+    public const int HeaderSize = 12; // PageNumber(4) + UsedSpace(4) + CollectionId(4)
 
     /// <summary>
     ///     Create new empty page.
     /// </summary>
-    public Page(int pageNumber, int pageSize)
+    public Page(int pageNumber, int pageSize, int collectionId)
     {
         if (pageSize < 512 || pageSize > 65536)
             throw new ArgumentException("Page size must be between 512 and 65536 bytes");
 
         PageNumber = pageNumber;
+        CollectionId = collectionId;
         Data = new byte[pageSize];
         UsedSpace = HeaderSize;
 
@@ -31,11 +32,14 @@ public class Page : IDisposable
         Data = data ?? throw new ArgumentNullException(nameof(data));
         PageNumber = pageNumber;
         UsedSpace = BitConverter.ToInt32(data, 4);
+        CollectionId = BitConverter.ToInt32(data, 8);
     }
 
     public byte[] Data { get; }
 
     public int PageNumber { get; }
+
+    public int CollectionId { get; }
 
     public int UsedSpace { get; private set; }
 
@@ -52,12 +56,13 @@ public class Page : IDisposable
     {
         BitConverter.GetBytes(PageNumber).CopyTo(Data, 0);
         BitConverter.GetBytes(UsedSpace).CopyTo(Data, 4);
+        BitConverter.GetBytes(CollectionId).CopyTo(Data, 8);
     }
 
     /// <summary>
     ///     Allocate space for new object.
     /// </summary>
-    public DBObject? AllocateObject(int schemeId, int collectionId, int version, byte[] objectData)
+    public DBObject? AllocateObject(int schemeId, int version, byte[] objectData)
     {
         var requiredSize = DBObject.MetaBytes + objectData.Length;
 
@@ -70,9 +75,8 @@ public class Page : IDisposable
         // Write metadata
         Data[objectBegin] = DBObject.AliveFlag;
         BitConverter.GetBytes(schemeId).CopyTo(Data, objectBegin + 1);
-        BitConverter.GetBytes(collectionId).CopyTo(Data, objectBegin + 5);
-        BitConverter.GetBytes(version).CopyTo(Data, objectBegin + 9);
-        BitConverter.GetBytes(objectData.Length).CopyTo(Data, objectBegin + 13);
+        BitConverter.GetBytes(version).CopyTo(Data, objectBegin + 5);
+        BitConverter.GetBytes(objectData.Length).CopyTo(Data, objectBegin + 9);
 
         // Write data
         Array.Copy(objectData, 0, Data, objectBegin + DBObject.MetaBytes, objectData.Length);
@@ -92,7 +96,7 @@ public class Page : IDisposable
         if (offset < HeaderSize || offset >= UsedSpace)
             throw new ArgumentOutOfRangeException(nameof(offset));
 
-        var dataSize = BitConverter.ToInt32(Data, offset + 13);
+        var dataSize = BitConverter.ToInt32(Data, offset + 9);
         var objectEnd = offset + DBObject.MetaBytes + dataSize;
 
         return new DBObject(this, offset, objectEnd);
@@ -107,7 +111,7 @@ public class Page : IDisposable
 
         while (cursor < UsedSpace)
         {
-            var dataSize = BitConverter.ToInt32(Data, cursor + 13);
+            var dataSize = BitConverter.ToInt32(Data, cursor + 9);
             var objectEnd = cursor + DBObject.MetaBytes + dataSize;
 
             yield return new DBObject(this, cursor, objectEnd);

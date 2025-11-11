@@ -96,6 +96,12 @@ public class CollectionManager<T, TKey>(
         return await primaryIndex.CountAsync();
     }
 
+    public async Task FlushAsync()
+    {
+        await dataSession.FlushAsync();
+        await primaryIndex.FlushAsync();
+    }
+
     public async Task CreateSecondaryIndexAsync<TIndexKey>(
         string fieldName,
         Func<T, TIndexKey> indexKeyExtractor,

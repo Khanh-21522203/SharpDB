@@ -8,6 +8,7 @@ namespace SharpDB.Storage.Database;
 /// <summary>
 ///     Decorator that adds compression to database storage.
 /// </summary>
+// TODO: Make compression algorithm configurable
 public class CompressedDatabaseStorageManager(
     IDatabaseStorageManager inner,
     CompressionLevel compressionLevel = CompressionLevel.Fastest,

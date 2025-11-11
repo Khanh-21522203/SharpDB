@@ -10,12 +10,3 @@ public interface IDatabaseHeaderManager
     Task DeleteCollectionAsync(int collectionId);
     Task<List<CollectionInfo>> GetCollectionsAsync();
 }
-
-public class CollectionInfo
-{
-    public int CollectionId { get; set; }
-    public string Name { get; set; } = "";
-    public int SchemaVersion { get; set; }
-    public long RecordCount { get; set; }
-    public DateTime CreatedAt { get; set; }
-}

@@ -159,6 +159,9 @@ Console.WriteLine();
     Console.WriteLine($"  Time: {updateTime:F2} ms");
     Console.WriteLine($"  Throughput: {updateThroughput:F2} ops/sec");
     Console.WriteLine($"  Avg per operation: {updateTime / recordCount:F3} ms\n");
+    
+    // Flush updates before scan
+    await collection.FlushAsync();
 
     // 4. SCAN ALL BENCHMARK
     Console.WriteLine($"[4/6] Scan All Records Benchmark");

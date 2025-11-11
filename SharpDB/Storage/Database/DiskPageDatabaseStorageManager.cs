@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Serilog;
+using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
 using SharpDB.Storage.Page;
@@ -13,13 +14,16 @@ namespace SharpDB.Storage.Database;
 public class DiskPageDatabaseStorageManager(
     IPageManager pageManager,
     ILogger logger,
-    IDatabaseHeaderManager headerManager)
+    IDatabaseHeaderManager headerManager,
+    EngineConfig config)
     : IDatabaseStorageManager
 {
     private readonly ConcurrentDictionary<int, Page.Page> _activePages = new();
     private readonly ConcurrentDictionary<int, long> _currentPagePositions = new();
     private readonly IDatabaseHeaderManager _headerManager = headerManager;
+    private readonly EngineConfig _config = config;
     private bool _disposed;
+    private readonly int _pageSize = config.PageSize;
 
     public async Task<Pointer> StoreAsync(int schemeId, int collectionId, int version, byte[] data)
     {
@@ -30,20 +34,19 @@ public class DiskPageDatabaseStorageManager(
         var page = await GetOrCreatePageAsync(collectionId);
 
         // Try allocate in current page
-        var dbObject = page.AllocateObject(schemeId, collectionId, version, data);
+        var dbObject = page.AllocateObject(schemeId, version, data);
 
         if (dbObject == null)
         {
             // Current page full, write it and get new page
             await pageManager.WritePageAsync(collectionId, page);
+
             page = await pageManager.AllocatePageAsync(collectionId);
             _activePages[collectionId] = page;
-
-            // Update current page position
-            _currentPagePositions[collectionId] = page.PageNumber * 8192; // Match config PageSize
+            _currentPagePositions[collectionId] = page.PageNumber * _pageSize;
 
             // Retry allocation
-            dbObject = page.AllocateObject(schemeId, collectionId, version, data);
+            dbObject = page.AllocateObject(schemeId, version, data);
 
             if (dbObject == null)
                 throw new InvalidOperationException("Failed to allocate object even in new page");
@@ -68,9 +71,8 @@ public class DiskPageDatabaseStorageManager(
             throw new ArgumentException("Pointer must be of TypeData", nameof(pointer));
 
         // Calculate page number and offset
-        var pageSize = 8192; // Should match config PageSize
-        var pageNumber = (int)(pointer.Position / pageSize);
-        var offsetInPage = (int)(pointer.Position % pageSize);
+        var pageNumber = (int)(pointer.Position / _pageSize);
+        var offsetInPage = (int)(pointer.Position % _pageSize);
         
         // First check if the page is in our active pages (not yet written to disk)
         Page.Page page;
@@ -83,7 +85,7 @@ public class DiskPageDatabaseStorageManager(
         else
         {
             // Load page from disk
-            page = await pageManager.LoadPageAsync(pointer.Chunk, pageNumber * pageSize);
+            page = await pageManager.LoadPageAsync(pointer.Chunk, pageNumber * _pageSize);
         }
 
         // Get object at offset
@@ -149,12 +151,20 @@ public class DiskPageDatabaseStorageManager(
 
     public async IAsyncEnumerable<DBObject> ScanAsync(int collectionId)
     {
+        // Flush active page for this collection to disk before scanning
+        if (_activePages.TryGetValue(collectionId, out var activePage))
+        {
+            await pageManager.WritePageAsync(collectionId, activePage);
+            logger.Debug("Flushed active page {PageNum} before scan", activePage.PageNumber);
+        }
+        
+        // Scan all pages from disk
         var statistics = await pageManager.GetStatisticsAsync(collectionId);
 
-        // Scan all pages
+        // Scan all pages on disk
         for (var pageNum = 0; pageNum < statistics.TotalPages; pageNum++)
         {
-            long pagePosition = pageNum * 4096;
+            long pagePosition = pageNum * _pageSize;
             Page.Page page;
 
             try
@@ -168,9 +178,9 @@ public class DiskPageDatabaseStorageManager(
                 continue;
             }
 
-            // Enumerate all objects in page
+            // Enumerate all objects in page (all objects belong to this collection)
             foreach (var dbObject in page.GetObjects())
-                if (dbObject.IsAlive && dbObject.CollectionId == collectionId)
+                if (dbObject.IsAlive)
                     yield return dbObject;
         }
     }
@@ -216,7 +226,7 @@ public class DiskPageDatabaseStorageManager(
         // Allocate new page
         page = await pageManager.AllocatePageAsync(collectionId);
         _activePages[collectionId] = page;
-        _currentPagePositions[collectionId] = page.PageNumber * 8192; // Match config PageSize
+        _currentPagePositions[collectionId] = page.PageNumber * _pageSize;
 
         return page;
     }

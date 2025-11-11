@@ -94,8 +94,33 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
     public async Task<int> CountAsync()
     {
         var count = 0;
-        await foreach (var _ in _searchOp.RangeSearchAsync(default!, default!)) count++;
+        // Scan entire tree from minimum to maximum possible values
+        var minKey = GetMinValue<TK>();
+        var maxKey = GetMaxValue<TK>();
+        await foreach (var _ in _searchOp.RangeSearchAsync(minKey, maxKey)) count++;
         return count;
+    }
+    
+    private T GetMinValue<T>() where T : IComparable<T>
+    {
+        var type = typeof(T);
+        if (type == typeof(long)) return (T)(object)long.MinValue;
+        if (type == typeof(int)) return (T)(object)int.MinValue;
+        if (type == typeof(string)) return (T)(object)string.Empty;
+        if (type == typeof(DateTime)) return (T)(object)DateTime.MinValue;
+        if (type == typeof(decimal)) return (T)(object)decimal.MinValue;
+        return default!;
+    }
+    
+    private T GetMaxValue<T>() where T : IComparable<T>
+    {
+        var type = typeof(T);
+        if (type == typeof(long)) return (T)(object)long.MaxValue;
+        if (type == typeof(int)) return (T)(object)int.MaxValue;
+        if (type == typeof(string)) return (T)(object)new string('\uffff', 255); // Max unicode string
+        if (type == typeof(DateTime)) return (T)(object)DateTime.MaxValue;
+        if (type == typeof(decimal)) return (T)(object)decimal.MaxValue;
+        return default!;
     }
 
     public async Task FlushAsync()

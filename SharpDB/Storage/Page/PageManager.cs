@@ -50,7 +50,7 @@ public class PageManager : IPageManager
             nextPosition = _pageSize; // Skip page 0 (header)
 
         var pageNumber = (int)(nextPosition / _pageSize);
-        var newPage = new Page(pageNumber, _pageSize);
+        var newPage = new Page(pageNumber, _pageSize, collectionId);
 
         _activePages.GetOrAdd(collectionId, _ => new HashSet<Page>()).Add(newPage);
         _nextPagePositions[collectionId] = nextPosition + _pageSize;
@@ -88,7 +88,7 @@ public class PageManager : IPageManager
         {
             // The page hasn't been written to disk yet - create an empty page
             var emptyPageNumber = (int)(pagePosition / _pageSize);
-            var emptyPage = new Page(emptyPageNumber, _pageSize);
+            var emptyPage = new Page(emptyPageNumber, _pageSize, collectionId);
             
             _activePages.GetOrAdd(collectionId, _ => new HashSet<Page>()).Add(emptyPage);
             _pageCache.Put(cacheKey, emptyPage);

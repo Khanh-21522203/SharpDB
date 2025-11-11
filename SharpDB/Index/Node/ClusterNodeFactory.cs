@@ -1,6 +1,7 @@
 using SharpDB.Core.Abstractions.Index;
 using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.DataStructures;
+using SharpDB.Serialization;
 
 namespace SharpDB.Index.Node;
 
@@ -32,20 +33,5 @@ public class ClusterNodeFactory<TK> : INodeFactory<TK, Pointer>
     public TreeNode<TK> DeserializeNode(byte[] data)
     {
         return _innerFactory.DeserializeNode(data);
-    }
-}
-
-public class PointerSerializer : ISerializer<Pointer>
-{
-    public int Size => Pointer.ByteSize;
-
-    public byte[] Serialize(Pointer obj)
-    {
-        return obj.ToBytes();
-    }
-
-    public Pointer Deserialize(byte[] bytes, int offset = 0)
-    {
-        return Pointer.FromBytes(bytes, offset);
     }
 }

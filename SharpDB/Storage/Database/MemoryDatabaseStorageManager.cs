@@ -1,4 +1,5 @@
 using System.Collections.Concurrent;
+using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
 using SharpDB.Storage.Page;
@@ -13,8 +14,14 @@ public class MemoryDatabaseStorageManager : IDatabaseStorageManager
     private readonly
         ConcurrentDictionary<string, (int SchemeId, int CollectionId, int Version, byte[] Data, bool IsDeleted)>
         _records = new();
+    private readonly EngineConfig _config;
 
     private long _nextPosition;
+
+    public MemoryDatabaseStorageManager(EngineConfig config)
+    {
+        _config = config;
+    }
 
     public Task<Pointer> StoreAsync(int schemeId, int collectionId, int version, byte[] data)
     {
@@ -38,8 +45,8 @@ public class MemoryDatabaseStorageManager : IDatabaseStorageManager
             return Task.FromResult<DBObject?>(null);
 
         // Create a mock DBObject
-        var page = new Page.Page(0, 4096);
-        var dbObj = page.AllocateObject(record.SchemeId, record.CollectionId, record.Version, record.Data);
+        var page = new Page.Page(0, _config.PageSize, record.CollectionId);
+        var dbObj = page.AllocateObject(record.SchemeId, record.Version, record.Data);
 
         return Task.FromResult(dbObj);
     }
@@ -66,7 +73,7 @@ public class MemoryDatabaseStorageManager : IDatabaseStorageManager
 
     public async IAsyncEnumerable<DBObject> ScanAsync(int collectionId)
     {
-        var page = new Page.Page(0, 4096);
+        var page = new Page.Page(0, _config.PageSize, collectionId);
 
         foreach (var kvp in _records)
         {
@@ -74,7 +81,7 @@ public class MemoryDatabaseStorageManager : IDatabaseStorageManager
 
             if (record.CollectionId == collectionId && !record.IsDeleted)
             {
-                var dbObj = page.AllocateObject(record.SchemeId, record.CollectionId, record.Version, record.Data);
+                var dbObj = page.AllocateObject(record.SchemeId, record.Version, record.Data);
                 if (dbObj != null)
                     yield return dbObj;
             }

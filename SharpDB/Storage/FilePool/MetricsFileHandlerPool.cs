@@ -1,4 +1,5 @@
 using Serilog;
+using SharpDB.Configuration;
 
 namespace SharpDB.Storage.FilePool;
 
@@ -7,8 +8,8 @@ public class MetricsFileHandlerPool(
     long cacheHits,
     long cacheMisses,
     ILogger logger,
-    int maxConcurrentHandles = 100)
-    : FileHandlerPool(logger, maxConcurrentHandles)
+    EngineConfig config)
+    : FileHandlerPool(logger, config)
 {
     private long _cacheHits = cacheHits;
     private long _cacheMisses = cacheMisses;
@@ -22,7 +23,7 @@ public class MetricsFileHandlerPool(
     {
         Interlocked.Increment(ref _totalRequests);
 
-        var wasInCache = _handles.ContainsKey(collectionId);
+        var wasInCache = _handles.ContainsKey(filePath);
         var handle = await base.GetHandleAsync(collectionId, filePath);
 
         if (wasInCache)

@@ -1,3 +1,4 @@
+using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Sessions;
 using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
@@ -5,10 +6,11 @@ using SharpDB.Storage.Page;
 
 namespace SharpDB.Storage.Sessions;
 
-public class BufferedDataIOSession(IDatabaseStorageManager storage) : IDataIOSession
+public class BufferedDataIOSession(IDatabaseStorageManager storage, EngineConfig config) : IDataIOSession
 {
     private readonly HashSet<Pointer> _deleteBuffer = [];
     private readonly Dictionary<Pointer, byte[]> _updateBuffer = new();
+    private readonly EngineConfig _config = config;
 
     public async Task<Pointer> StoreAsync(int schemeId, int collectionId, int version, byte[] data)
     {
@@ -25,9 +27,9 @@ public class BufferedDataIOSession(IDatabaseStorageManager storage) : IDataIOSes
         // Check if in update buffer
         if (_updateBuffer.TryGetValue(pointer, out var data))
         {
-            // Return modified version
-            var page = new Page.Page(0, 4096);
-            return page.AllocateObject(0, 0, 1, data);
+            // Return modified version (use pointer.Chunk as collectionId)
+            var page = new Page.Page(0, _config.PageSize, pointer.Chunk);
+            return page.AllocateObject(0, 1, data);
         }
 
         // Check if deleted

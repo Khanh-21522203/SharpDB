@@ -5,6 +5,7 @@ namespace SharpDB.Configuration;
 public class EngineConfig
 {
     public int PageSize { get; set; } = 4096;
+    public int FileBufferSize { get; set; } = 8192; // Buffer size for FileStream
     public int MaxFileHandles { get; set; } = 100;
     public int BTreeDegree { get; set; } = 128;
     public bool UseBufferedIO { get; set; } = true;
@@ -25,6 +26,7 @@ public class EngineConfig
     public static EngineConfig HighPerformance => new()
     {
         PageSize = 8192,
+        FileBufferSize = 16384,
         MaxFileHandles = 500,
         BTreeDegree = 256,
         UseBufferedIO = true,
@@ -38,6 +40,7 @@ public class EngineConfig
     public static EngineConfig LowMemory => new()
     {
         PageSize = 2048,
+        FileBufferSize = 4096,
         MaxFileHandles = 50,
         BTreeDegree = 64,
         Cache = new CacheConfig

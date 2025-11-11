@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Serilog;
+using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Storage;
 
 namespace SharpDB.Storage.FilePool;
@@ -11,19 +12,21 @@ namespace SharpDB.Storage.FilePool;
 public class FileHandlerPool : IFileHandlerPool
 {
     private readonly SemaphoreSlim _globalLimit;
-    protected readonly ConcurrentDictionary<int, FileStream> _handles = new();
-    private readonly ConcurrentDictionary<int, SemaphoreSlim> _locks = new();
+    protected readonly ConcurrentDictionary<string, FileStream> _handles = new();
+    private readonly ConcurrentDictionary<string, SemaphoreSlim> _locks = new();
     private readonly ILogger _logger;
     protected readonly int _maxConcurrentHandles;
+    private readonly EngineConfig _config;
     private bool _disposed;
 
-    public FileHandlerPool(ILogger logger, int maxConcurrentHandles = 100)
+    public FileHandlerPool(ILogger logger, EngineConfig config)
     {
-        if (maxConcurrentHandles <= 0)
-            throw new ArgumentException("Max handles must be positive", nameof(maxConcurrentHandles));
+        if (config.MaxFileHandles <= 0)
+            throw new ArgumentException("Max handles must be positive", nameof(config.MaxFileHandles));
 
-        _maxConcurrentHandles = maxConcurrentHandles;
-        _globalLimit = new SemaphoreSlim(maxConcurrentHandles, maxConcurrentHandles);
+        _config = config;
+        _maxConcurrentHandles = config.MaxFileHandles;
+        _globalLimit = new SemaphoreSlim(_maxConcurrentHandles, _maxConcurrentHandles);
         _logger = logger;
     }
 
@@ -42,18 +45,18 @@ public class FileHandlerPool : IFileHandlerPool
 
         try
         {
-            // Get or create per-collection lock
-            var collectionLock = _locks.GetOrAdd(
-                collectionId,
+            // Get or create per-file lock
+            var fileLock = _locks.GetOrAdd(
+                filePath,
                 _ => new SemaphoreSlim(1, 1)
             );
 
-            await collectionLock.WaitAsync();
+            await fileLock.WaitAsync();
 
             try
             {
                 // Check if handle already exists
-                if (_handles.TryGetValue(collectionId, out var existingHandle))
+                if (_handles.TryGetValue(filePath, out var existingHandle))
                 {
                     if (!existingHandle.CanRead || !existingHandle.CanWrite)
                     {
@@ -64,7 +67,7 @@ public class FileHandlerPool : IFileHandlerPool
                         );
 
                         existingHandle.Dispose();
-                        _handles.TryRemove(collectionId, out _);
+                        _handles.TryRemove(filePath, out _);
                     }
                     else
                     {
@@ -81,22 +84,30 @@ public class FileHandlerPool : IFileHandlerPool
                     "Creating new handle for collection {CollectionId} at {FilePath}",
                     collectionId, filePath
                 );
+                
+                // Ensure directory exists
+                var directory = Path.GetDirectoryName(filePath);
+                if (!string.IsNullOrEmpty(directory) && !Directory.Exists(directory))
+                {
+                    Directory.CreateDirectory(directory);
+                    _logger.Debug("Created directory {Directory}", directory);
+                }
 
                 var newHandle = new FileStream(
                     filePath,
                     FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,
                     FileShare.None,
-                    8192, // 8KB buffer
+                    _config.FileBufferSize,
                     true // Enable async I/O
                 );
 
-                _handles[collectionId] = newHandle;
+                _handles[filePath] = newHandle;
                 return newHandle;
             }
             finally
             {
-                collectionLock.Release();
+                fileLock.Release();
             }
         }
         catch (Exception ex)
@@ -119,8 +130,13 @@ public class FileHandlerPool : IFileHandlerPool
     public async Task ReleaseHandleAsync(int collectionId)
     {
         ThrowIfDisposed();
-
-        if (_handles.TryRemove(collectionId, out var handle))
+        
+        // Find all handles for this collectionId and remove them
+        var toRemove = _handles.Where(kvp => kvp.Key.Contains($"_{collectionId}.")).ToList();
+        
+        foreach (var kvp in toRemove)
+        {
+            if (_handles.TryRemove(kvp.Key, out var handle))
             try
             {
                 await handle.FlushAsync();
@@ -138,9 +154,10 @@ public class FileHandlerPool : IFileHandlerPool
                     collectionId
                 );
             }
-
-        // Remove associated lock
-        if (_locks.TryRemove(collectionId, out var semaphore)) semaphore.Dispose();
+            
+            // Remove associated lock
+            if (_locks.TryRemove(kvp.Key, out var semaphore)) semaphore.Dispose();
+        }
     }
 
     /// <summary>
