@@ -24,20 +24,31 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
                 if (transactionId.HasValue)
                 {
                     // Multiple writes in the same transaction can share the same timestamp.
-                    // Prefer the latest appended uncommitted version in the chain.
-                    var ownUncommitted = chain
-                        .LastOrDefault(v => !v.IsCommitted && v.TransactionId == transactionId.Value);
-
-                    if (ownUncommitted != null)
-                        return ownUncommitted.IsDeleted ? null : ownUncommitted;
+                    // Prefer the latest appended uncommitted version in the chain (scan backwards).
+                    var txnId = transactionId.Value;
+                    for (var i = chain.Count - 1; i >= 0; i--)
+                    {
+                        var v = chain[i];
+                        if (!v.IsCommitted && v.TransactionId == txnId)
+                            return v.IsDeleted ? null : v;
+                    }
                 }
 
-                var visible = chain
-                    .Where(v => v.IsCommitted && v.BeginTimestamp <= readTimestamp && v.EndTimestamp > readTimestamp)
-                    .OrderByDescending(v => v.BeginTimestamp)
-                    .ThenByDescending(v => v.CommitOrder)
-                    .ThenByDescending(v => v.WriteOrder)
-                    .FirstOrDefault();
+                // Find visible committed version: highest BeginTimestamp, then CommitOrder, then WriteOrder.
+                VersionedRecord? visible = null;
+                foreach (var v in chain)
+                {
+                    if (!v.IsCommitted || v.BeginTimestamp > readTimestamp || v.EndTimestamp <= readTimestamp)
+                        continue;
+
+                    if (visible == null ||
+                        v.BeginTimestamp > visible.BeginTimestamp ||
+                        (v.BeginTimestamp == visible.BeginTimestamp && v.CommitOrder > visible.CommitOrder) ||
+                        (v.BeginTimestamp == visible.BeginTimestamp && v.CommitOrder == visible.CommitOrder && v.WriteOrder > visible.WriteOrder))
+                    {
+                        visible = v;
+                    }
+                }
 
                 if (visible != null)
                     return visible.IsDeleted ? null : visible;
@@ -120,12 +131,20 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
                 if (!_versionChains.TryGetValue(pending.ChainKey, out var chain))
                     continue;
 
-                var previousCommitted = chain
-                    .Where(v => v.IsCommitted && !ReferenceEquals(v, pending.Version) && v.EndTimestamp == long.MaxValue)
-                    .OrderByDescending(v => v.BeginTimestamp)
-                    .ThenByDescending(v => v.CommitOrder)
-                    .ThenByDescending(v => v.WriteOrder)
-                    .FirstOrDefault();
+                VersionedRecord? previousCommitted = null;
+                foreach (var v in chain)
+                {
+                    if (!v.IsCommitted || ReferenceEquals(v, pending.Version) || v.EndTimestamp != long.MaxValue)
+                        continue;
+
+                    if (previousCommitted == null ||
+                        v.BeginTimestamp > previousCommitted.BeginTimestamp ||
+                        (v.BeginTimestamp == previousCommitted.BeginTimestamp && v.CommitOrder > previousCommitted.CommitOrder) ||
+                        (v.BeginTimestamp == previousCommitted.BeginTimestamp && v.CommitOrder == previousCommitted.CommitOrder && v.WriteOrder > previousCommitted.WriteOrder))
+                    {
+                        previousCommitted = v;
+                    }
+                }
 
                 if (previousCommitted != null)
                     previousCommitted.EndTimestamp = commitTimestamp;
@@ -191,6 +210,11 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
         }
 
         return Task.CompletedTask;
+    }
+
+    public Task FlushStorageAsync()
+    {
+        return storage.FlushAsync();
     }
 
     public void Dispose()

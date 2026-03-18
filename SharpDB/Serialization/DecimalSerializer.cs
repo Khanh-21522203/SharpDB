@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using SharpDB.Core.Abstractions.Serialization;
 
 namespace SharpDB.Serialization;
@@ -8,11 +9,16 @@ public class DecimalSerializer : ISerializer<decimal>
 
     public byte[] Serialize(decimal obj)
     {
-        var bits = decimal.GetBits(obj);
         var bytes = new byte[16];
-
-        Buffer.BlockCopy(bits, 0, bytes, 0, 16);
+        SerializeTo(obj, bytes);
         return bytes;
+    }
+
+    public void SerializeTo(decimal obj, Span<byte> dest)
+    {
+        Span<int> bits = stackalloc int[4];
+        decimal.TryGetBits(obj, bits, out _);
+        MemoryMarshal.Cast<int, byte>(bits).CopyTo(dest);
     }
 
     public decimal Deserialize(byte[] bytes, int offset = 0)

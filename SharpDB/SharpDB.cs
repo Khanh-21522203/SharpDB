@@ -47,10 +47,10 @@ public class SharpDB : IDisposable
 
         // Initialize components
         _filePool = new FileHandlerPool(_logger, _config);
-        IPageManager pageManager = new PageManager(basePath, _filePool, _config.PageSize, _config.Cache.PageCacheSize);
+        IPageManager pageManager = new PageManager(basePath, _filePool, _config.PageSize, _config.Cache.PageCacheSize, _config.SyncOnWrite);
         _dbHeaderManager = new DatabaseHeaderManager(basePath);
         _dbStorage = new DiskPageDatabaseStorageManager(pageManager, _logger, _dbHeaderManager, _config);
-        _indexStorage = new DiskPageFileIndexStorageManager(basePath, _logger, _filePool);
+        _indexStorage = new DiskPageFileIndexStorageManager(basePath, _logger, _filePool, _config.SyncOnWrite);
 
         // Initialize WAL Manager after storage is available so recovery can apply data changes.
         if (_config.EnableWAL)
@@ -80,7 +80,8 @@ public class SharpDB : IDisposable
             _config.EnableWAL,
             _config.WALAutoCheckpoint,
             _config.WALCheckpointInterval,
-            CreateCheckpointAsync);
+            CreateCheckpointAsync,
+            indexFlushAsync: () => _indexStorage.FlushAsync());
         _transactionBoundary = new TransactionBoundary(_transactionManager);
     }
 
@@ -219,6 +220,7 @@ public class SharpDB : IDisposable
     public async Task FlushAsync()
     {
         await _dbStorage.FlushAsync();
+        await _indexStorage.FlushAsync();
         await _filePool.FlushAllAsync();
         _walManager?.Flush();
     }

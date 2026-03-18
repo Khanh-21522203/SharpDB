@@ -6,24 +6,28 @@ namespace SharpDB.Storage.Page;
 
 public class PageManager : IPageManager
 {
-    private readonly ConcurrentDictionary<int, HashSet<Page>> _activePages = new();
+    // Inner key is page number; ConcurrentDictionary makes add/lookup thread-safe.
+    private readonly ConcurrentDictionary<int, ConcurrentDictionary<int, Page>> _activePages = new();
     private readonly string _basePath;
     private readonly IFileHandlerPool _filePool;
     private readonly ConcurrentDictionary<int, HashSet<long>> _freePages = new();
     private readonly ConcurrentDictionary<int, long> _nextPagePositions = new();
     private readonly int _pageSize;
-    private readonly LruCache<string, Page> _pageCache;
+    private readonly bool _syncOnWrite;
+    private readonly LruCache<(int CollectionId, long PagePosition), Page> _pageCache;
 
     public PageManager(
         string basePath,
         IFileHandlerPool filePool,
         int pageSize = 4096,
-        int cacheSize = 1000)
+        int cacheSize = 1000,
+        bool syncOnWrite = true)
     {
         _basePath = basePath ?? throw new ArgumentNullException(nameof(basePath));
         _pageSize = pageSize;
+        _syncOnWrite = syncOnWrite;
         _filePool = filePool;
-        _pageCache = new LruCache<string, Page>(cacheSize);
+        _pageCache = new LruCache<(int, long), Page>(cacheSize);
 
         Directory.CreateDirectory(basePath);
     }
@@ -52,7 +56,7 @@ public class PageManager : IPageManager
         var pageNumber = (int)(nextPosition / _pageSize);
         var newPage = new Page(pageNumber, _pageSize, collectionId);
 
-        _activePages.GetOrAdd(collectionId, _ => new HashSet<Page>()).Add(newPage);
+        _activePages.GetOrAdd(collectionId, _ => new ConcurrentDictionary<int, Page>())[pageNumber] = newPage;
         _nextPagePositions[collectionId] = nextPosition + _pageSize;
 
         return newPage;
@@ -61,7 +65,7 @@ public class PageManager : IPageManager
     public async Task<Page> LoadPageAsync(int collectionId, long pagePosition)
     {
         // Try to get from cache first
-        var cacheKey = GetCacheKey(collectionId, pagePosition);
+        var cacheKey = (collectionId, pagePosition);
         if (_pageCache.TryGet(cacheKey, out var cachedPage))
         {
             return cachedPage;
@@ -71,8 +75,7 @@ public class PageManager : IPageManager
         if (_activePages.TryGetValue(collectionId, out var activeSet))
         {
             var targetPageNumber = (int)(pagePosition / _pageSize);
-            var activePage = activeSet.FirstOrDefault(p => p.PageNumber == targetPageNumber);
-            if (activePage != null)
+            if (activeSet.TryGetValue(targetPageNumber, out var activePage))
             {
                 _pageCache.Put(cacheKey, activePage);
                 return activePage;
@@ -89,10 +92,10 @@ public class PageManager : IPageManager
             // The page hasn't been written to disk yet - create an empty page
             var emptyPageNumber = (int)(pagePosition / _pageSize);
             var emptyPage = new Page(emptyPageNumber, _pageSize, collectionId);
-            
-            _activePages.GetOrAdd(collectionId, _ => new HashSet<Page>()).Add(emptyPage);
+
+            _activePages.GetOrAdd(collectionId, _ => new ConcurrentDictionary<int, Page>())[emptyPageNumber] = emptyPage;
             _pageCache.Put(cacheKey, emptyPage);
-            
+
             return emptyPage;
         }
 
@@ -107,8 +110,8 @@ public class PageManager : IPageManager
         var pageNumber = (int)(pagePosition / _pageSize);
         var page = new Page(buffer, pageNumber);
 
-        _activePages.GetOrAdd(collectionId, _ => new HashSet<Page>()).Add(page);
-        
+        _activePages.GetOrAdd(collectionId, _ => new ConcurrentDictionary<int, Page>())[pageNumber] = page;
+
         // Add to cache
         _pageCache.Put(cacheKey, page);
 
@@ -120,27 +123,26 @@ public class PageManager : IPageManager
         var filePath = GetFilePath(collectionId);
         var handle = await _filePool.GetHandleAsync(collectionId, filePath);
 
-        var pagePosition = page.PageNumber * _pageSize;
+        var pagePosition = (long)page.PageNumber * _pageSize;
         handle.Seek(pagePosition, SeekOrigin.Begin);
 
         await handle.WriteAsync(page.Data, 0, page.Data.Length);
-        await handle.FlushAsync();
+        if (_syncOnWrite)
+            await handle.FlushAsync();
 
         page.ClearModified();
-        
+
         // Update cache
-        var cacheKey = GetCacheKey(collectionId, pagePosition);
-        _pageCache.Put(cacheKey, page);
+        _pageCache.Put((collectionId, pagePosition), page);
     }
 
     public Task FreePageAsync(int collectionId, long pagePosition)
     {
         var freeSet = _freePages.GetOrAdd(collectionId, _ => new HashSet<long>());
         freeSet.Add(pagePosition);
-        
+
         // Remove from cache
-        var cacheKey = GetCacheKey(collectionId, pagePosition);
-        _pageCache.Remove(cacheKey);
+        _pageCache.Remove((collectionId, pagePosition));
 
         return Task.CompletedTask;
     }
@@ -178,7 +180,7 @@ public class PageManager : IPageManager
     public async Task DisposeCollectionPagesAsync(int collectionId)
     {
         if (_activePages.TryRemove(collectionId, out var pages))
-            foreach (var page in pages)
+            foreach (var page in pages.Values)
                 page.Dispose();
 
         await _filePool.CloseAsync(collectionId);
@@ -187,10 +189,5 @@ public class PageManager : IPageManager
     private string GetFilePath(int collectionId)
     {
         return Path.Combine(_basePath, $"data_{collectionId}.db");
-    }
-
-    private string GetCacheKey(int collectionId, long pagePosition)
-    {
-        return $"{collectionId}:{pagePosition}";
     }
 }

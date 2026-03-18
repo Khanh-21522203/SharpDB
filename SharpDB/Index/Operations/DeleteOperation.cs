@@ -32,7 +32,7 @@ public class DeleteOperation<TK, TV>(
             await storage.SetRootPointerAsync(indexId, newRootPointer);
         }
 
-        await session.FlushAsync();
+        // Dirty nodes are left in the session and flushed at transaction commit.
         return deleted;
     }
 

@@ -264,18 +264,13 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
 
         await foreach (var dbObject in _dataSession.ScanAsync(_collectionId))
         {
-            // Skip deleted objects (soft delete)
+            // Skip deleted objects (soft delete flag on page is the authoritative source)
             if (!dbObject.IsAlive)
                 continue;
 
-            var record = _serializer.Deserialize<T>(dbObject.Data);
-            var key = _keyExtractor(record);
-
-            // Verify record still exists in primary index
-            // (deletes remove from index but may not clean data pages immediately)
-            var pointer = await _primaryIndex.GetAsync(key);
-            if (IsValidDataPointer(pointer) && pointer == ToPointer(dbObject))
-                yield return record;
+            // Zero-copy: read directly from the page buffer — avoids allocating a new byte[] per record.
+            var record = _serializer.Deserialize<T>(dbObject.RawData, dbObject.DataOffset);
+            yield return record;
         }
     }
 

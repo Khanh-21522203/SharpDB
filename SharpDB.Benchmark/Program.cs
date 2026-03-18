@@ -24,6 +24,7 @@ try
         BTreeDegree = 64,
         EnableWAL = cfg.EnableWal,
         WALAutoCheckpoint = false,
+        SyncOnWrite = false, // Skip per-write fsync for benchmark throughput
         Cache = new CacheConfig { PageCacheSize = 4000 }
     };
 
@@ -33,6 +34,11 @@ try
 
         using var db = new SharpDB.SharpDB(dbPath, engineConfig);
         var people = await db.CreateCollectionAsync<BenchmarkPerson, long>("people", PersonSchema(), p => p.Id);
+
+        // Unique secondary index on Email — one record per email, built incrementally with inserts.
+        // (Non-unique secondary indexes are supported but have a 100-value-per-key cap in BinaryListSerializer.)
+        await people.CreateSecondaryIndexAsync<string>("Email", p => p.Email, isUnique: true);
+
         await PopulateBaseDataAsync(people, cfg.Rows);
         await db.FlushAsync();
 
@@ -40,7 +46,12 @@ try
         var rangeCursor = 0;
         var updateCursor = 0;
         var deleteCursor = 0;
+        var ageLookupCursor = 0;
+        var commitUpdateCursor = 0;
+        long topNCursor = 1L;
         long nextInsertId = cfg.Rows + 1L;
+        // Committed inserts start far above the rollback range to avoid ID conflicts.
+        long nextCommitInsertId = (long)cfg.Rows * 10L + 1L;
 
         var cases = new List<BenchCase>
         {
@@ -76,6 +87,20 @@ try
                 rangeCursor = (rangeCursor + window) % cfg.Rows;
                 return rowsOut;
             }),
+            new("read.top_n", async () =>
+            {
+                // Fetch a fixed 100-row window via B+Tree range — tests ordered index scan.
+                const int n = 100;
+                long rowsOut = 0;
+                var min = topNCursor;
+                var max = min + n - 1;
+                topNCursor = (topNCursor + n - 1) % cfg.Rows + 1;
+
+                await foreach (var _ in people.RangeQueryAsync(min, max))
+                    rowsOut++;
+
+                return rowsOut;
+            }),
             new("read.filter_scan", async () =>
             {
                 long rowsOut = 0;
@@ -86,6 +111,21 @@ try
                 }
                 return rowsOut;
             }),
+            new("read.secondary_lookup", async () =>
+            {
+                // Batch of point lookups via unique secondary index on Email.
+                // Same batch size as pk_lookup_batch to make per-op cost directly comparable.
+                long hits = 0;
+                for (var i = 0; i < cfg.SelectBatch; i++)
+                {
+                    var id = (ageLookupCursor + i) % cfg.Rows + 1;
+                    var email = $"person{id}@example.com";
+                    var person = await people.SelectBySecondaryIndexAsync<string>("Email", email);
+                    if (person != null) hits++;
+                }
+                ageLookupCursor = (ageLookupCursor + cfg.SelectBatch) % cfg.Rows;
+                return hits;
+            }),
             new("write.insert_rollback", async () =>
             {
                 await using var tx = await db.Transactions.BeginAsync(IsolationLevel.ReadCommitted);
@@ -94,6 +134,24 @@ try
 
                 nextInsertId += cfg.WriteBatch;
                 await tx.RollbackAsync();
+                return cfg.WriteBatch;
+            }),
+            new("write.insert_commit", async () =>
+            {
+                // Insert batch (committed), then delete same rows (committed) to keep dataset stable.
+                var startId = nextCommitInsertId;
+                nextCommitInsertId += cfg.WriteBatch;
+
+                await using var ins = await db.Transactions.BeginAsync(IsolationLevel.ReadCommitted);
+                for (var i = 0; i < cfg.WriteBatch; i++)
+                    await people.InsertAsync(BuildPerson(startId + i), ins);
+                await ins.CommitAsync();
+
+                await using var del = await db.Transactions.BeginAsync(IsolationLevel.ReadCommitted);
+                for (var i = 0; i < cfg.WriteBatch; i++)
+                    await people.DeleteAsync(startId + i, del);
+                await del.CommitAsync();
+
                 return cfg.WriteBatch;
             }),
             new("write.update_rollback", async () =>
@@ -115,6 +173,27 @@ try
 
                 updateCursor = (updateCursor + cfg.WriteBatch) % cfg.Rows;
                 await tx.RollbackAsync();
+                return updated;
+            }),
+            new("write.update_commit", async () =>
+            {
+                // Committed update batch — measures real commit overhead vs rollback.
+                await using var tx = await db.Transactions.BeginAsync(IsolationLevel.ReadCommitted);
+                long updated = 0;
+                for (var i = 0; i < cfg.WriteBatch; i++)
+                {
+                    var id = (commitUpdateCursor + i) % cfg.Rows + 1;
+                    var person = await people.SelectAsync(id, tx);
+                    if (person == null)
+                        continue;
+
+                    person.Score += 1.0;
+                    await people.UpdateAsync(person, tx);
+                    updated++;
+                }
+
+                commitUpdateCursor = (commitUpdateCursor + cfg.WriteBatch) % cfg.Rows;
+                await tx.CommitAsync();
                 return updated;
             }),
             new("write.delete_rollback", async () =>
@@ -142,8 +221,9 @@ try
 
         Console.WriteLine(
             $"{PadRight("case", 28)}{PadLeft("avg_ms", 10)}{PadLeft("p50", 10)}{PadLeft("p95", 10)}" +
-            $"{PadLeft("min", 10)}{PadLeft("max", 10)}{PadLeft("qps", 10)}{PadLeft("rows_out", 12)}");
-        Console.WriteLine(new string('-', 100));
+            $"{PadLeft("min", 10)}{PadLeft("max", 10)}{PadLeft("qps", 10)}{PadLeft("rows_out", 12)}" +
+            $"{PadLeft("gc0/iter", 10)}{PadLeft("gc1/iter", 10)}{PadLeft("gc2/iter", 10)}");
+        Console.WriteLine(new string('-', 130));
 
         foreach (var benchmarkCase in cases)
         {
@@ -156,7 +236,10 @@ try
                 $"{PadLeft(Format(stats.MinMs, 3), 10)}" +
                 $"{PadLeft(Format(stats.MaxMs, 3), 10)}" +
                 $"{PadLeft(Format(stats.Qps, 1), 10)}" +
-                $"{PadLeft(Format(stats.AvgRowsOut, 1), 12)}");
+                $"{PadLeft(Format(stats.AvgRowsOut, 1), 12)}" +
+                $"{PadLeft(Format(stats.AvgGc0, 2), 10)}" +
+                $"{PadLeft(Format(stats.AvgGc1, 2), 10)}" +
+                $"{PadLeft(Format(stats.AvgGc2, 2), 10)}");
         }
     }
     finally
@@ -204,12 +287,21 @@ static async Task<BenchStats> RunBenchmarkCaseAsync(BenchCase benchCase, BenchCo
 
     var samplesMs = new List<double>(cfg.Iterations);
     double rowsTotal = 0;
+    int totalGc0 = 0, totalGc1 = 0, totalGc2 = 0;
 
     for (var i = 0; i < cfg.Iterations; i++)
     {
+        var gc0Before = GC.CollectionCount(0);
+        var gc1Before = GC.CollectionCount(1);
+        var gc2Before = GC.CollectionCount(2);
+
         var sw = Stopwatch.StartNew();
         var rowsOut = await benchCase.RunAsync();
         sw.Stop();
+
+        totalGc0 += GC.CollectionCount(0) - gc0Before;
+        totalGc1 += GC.CollectionCount(1) - gc1Before;
+        totalGc2 += GC.CollectionCount(2) - gc2Before;
 
         samplesMs.Add(sw.Elapsed.TotalMilliseconds);
         rowsTotal += rowsOut;
@@ -225,7 +317,10 @@ static async Task<BenchStats> RunBenchmarkCaseAsync(BenchCase benchCase, BenchCo
         samplesMs[0],
         samplesMs[^1],
         avgMs > 0 ? 1000.0 / avgMs : 0.0,
-        rowsTotal / cfg.Iterations);
+        rowsTotal / cfg.Iterations,
+        (double)totalGc0 / cfg.Iterations,
+        (double)totalGc1 / cfg.Iterations,
+        (double)totalGc2 / cfg.Iterations);
 }
 
 static double Percentile(IReadOnlyList<double> sortedSamples, double percentile)
@@ -387,4 +482,7 @@ internal readonly record struct BenchStats(
     double MinMs,
     double MaxMs,
     double Qps,
-    double AvgRowsOut);
+    double AvgRowsOut,
+    double AvgGc0,
+    double AvgGc1,
+    double AvgGc2);

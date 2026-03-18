@@ -3,6 +3,15 @@ using SharpDB.DataStructures;
 namespace SharpDB.Core.Abstractions.Storage;
 
 /// <summary>
+///     Optional interface for index storage managers that support session flush registration.
+///     Implementations can flush all registered session callbacks when FlushAsync() is called.
+/// </summary>
+public interface IIndexSessionFlushRegistry
+{
+    void RegisterSessionFlush(Func<Task> callback);
+}
+
+/// <summary>
 ///     Manages persistent storage for B+ tree index nodes.
 /// </summary>
 public interface IIndexStorageManager : IDisposable
@@ -41,6 +50,11 @@ public interface IIndexStorageManager : IDisposable
     ///     Get empty node buffer.
     /// </summary>
     byte[] GetEmptyNode(int keySize, int valueSize, int degree);
+
+    /// <summary>
+    ///     Flush deferred writes (e.g. index headers) to durable storage.
+    /// </summary>
+    Task FlushAsync();
 }
 
 /// <summary>

@@ -1,3 +1,5 @@
+using System.Buffers;
+using System.Buffers.Binary;
 using System.Collections.Concurrent;
 using Serilog;
 using SharpDB.Core.Abstractions.Storage;
@@ -10,7 +12,7 @@ namespace SharpDB.Storage.Index;
 ///     Disk-based storage manager for B+ tree nodes.
 ///     Uses file per index approach for isolation.
 /// </summary>
-public class DiskPageFileIndexStorageManager : IIndexStorageManager
+public class DiskPageFileIndexStorageManager : IIndexStorageManager, IIndexSessionFlushRegistry
 {
     private readonly string _basePath;
     private readonly IFileHandlerPool _filePool;
@@ -18,15 +20,21 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
     private readonly IIndexHeaderManager _headerManager;
     private readonly ILogger _logger;
     private readonly ConcurrentDictionary<int, long> _nextPositions = new();
+    private readonly bool _syncOnWrite;
+    private readonly List<Func<Task>> _sessionFlushCallbacks = [];
+    // Pre-allocated 4-byte buffer for size-prefix writes — avoids BitConverter.GetBytes allocation per node write.
+    private readonly byte[] _sizeBuffer = new byte[4];
     private bool _disposed;
 
     public DiskPageFileIndexStorageManager(
         string basePath,
         ILogger logger,
-        IFileHandlerPool filePool)
+        IFileHandlerPool filePool,
+        bool syncOnWrite = true)
     {
         _basePath = basePath ?? throw new ArgumentNullException(nameof(basePath));
         _filePool = filePool;
+        _syncOnWrite = syncOnWrite;
         _headerManager = new IndexHeaderManager(basePath);
         _logger = logger;
 
@@ -50,27 +58,32 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
     {
         if (pointer.Type != Pointer.TypeNode)
             throw new ArgumentException("Pointer must be of TypeNode", nameof(pointer));
-            
+
         if (pointer.Position < 0)
             throw new ArgumentException($"Invalid pointer position: {pointer.Position}", nameof(pointer));
 
         var filePath = GetIndexFilePath(indexId);
         var handle = await _filePool.GetHandleAsync(indexId, filePath);
 
-        // Seek to position
         handle.Seek(pointer.Position, SeekOrigin.Begin);
 
-        // Read node size (first 4 bytes)
-        var sizeBuffer = new byte[4];
-        await handle.ReadExactlyAsync(sizeBuffer, 0, 4);
-        var nodeSize = BitConverter.ToInt32(sizeBuffer, 0);
+        // Read node size using a pooled 4-byte buffer.
+        var sizeBuffer = ArrayPool<byte>.Shared.Rent(4);
+        int nodeSize;
+        try
+        {
+            await handle.ReadExactlyAsync(sizeBuffer, 0, 4);
+            nodeSize = BitConverter.ToInt32(sizeBuffer, 0);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(sizeBuffer);
+        }
 
-        // Read node data (without including the size prefix in the data)
         var nodeData = new byte[nodeSize];
         await handle.ReadExactlyAsync(nodeData, 0, nodeSize);
 
-        _logger.Debug("Read node at {Position}, size {Size}",
-            pointer.Position, nodeSize);
+        _logger.Debug("Read node at {Position}, size {Size}", pointer.Position, nodeSize);
 
         return new NodeData(pointer, nodeData);
     }
@@ -102,14 +115,11 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
 
         // Write node with size prefix
         handle.Seek(position, SeekOrigin.Begin);
-        
-        // Write size first (4 bytes)
-        var sizeBytes = BitConverter.GetBytes(data.Length);
-        await handle.WriteAsync(sizeBytes, 0, 4);
-        
-        // Then write the actual node data
+        BinaryPrimitives.WriteInt32LittleEndian(_sizeBuffer, data.Length);
+        await handle.WriteAsync(_sizeBuffer, 0, 4);
         await handle.WriteAsync(data, 0, data.Length);
-        await handle.FlushAsync();
+        if (_syncOnWrite)
+            await handle.FlushAsync();
 
         var pointer = new Pointer(Pointer.TypeNode, position, 0);
 
@@ -132,27 +142,42 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager
 
         // Write at existing position with size prefix
         handle.Seek(pointer.Position, SeekOrigin.Begin);
-        
-        // Write size first (4 bytes)
-        var sizeBytes = BitConverter.GetBytes(data.Length);
-        await handle.WriteAsync(sizeBytes, 0, 4);
-        
-        // Then write the actual node data
+        BinaryPrimitives.WriteInt32LittleEndian(_sizeBuffer, data.Length);
+        await handle.WriteAsync(_sizeBuffer, 0, 4);
         await handle.WriteAsync(data, 0, data.Length);
-        await handle.FlushAsync();
+        if (_syncOnWrite)
+            await handle.FlushAsync();
 
         _logger.Debug("Updated node at {Position}, size {Size}",
             pointer.Position, data.Length);
     }
 
+    public void RegisterSessionFlush(Func<Task> callback)
+    {
+        _sessionFlushCallbacks.Add(callback);
+    }
+
+    public async Task FlushAsync()
+    {
+        // Flush all registered index I/O sessions (write dirty B+Tree nodes) before headers.
+        foreach (var callback in _sessionFlushCallbacks)
+            await callback();
+
+        await _headerManager.FlushAsync();
+    }
+
     public Task RemoveNodeAsync(int indexId, Pointer pointer)
     {
-        // Add to free list for reuse
-        var freeSet = _freePositions.GetOrAdd(indexId, _ => new HashSet<long>());
-        freeSet.Add(pointer.Position);
+        // Only track real (positive) disk positions for reuse.
+        // Temp pointers (Position < 0) were never written to disk, so there is no space to reclaim.
+        if (pointer.Position > 0)
+        {
+            var freeSet = _freePositions.GetOrAdd(indexId, _ => new HashSet<long>());
+            freeSet.Add(pointer.Position);
 
-        _logger.Debug("Marked position {Position} as free for index {IndexId}",
-            pointer.Position, indexId);
+            _logger.Debug("Marked position {Position} as free for index {IndexId}",
+                pointer.Position, indexId);
+        }
 
         return Task.CompletedTask;
     }

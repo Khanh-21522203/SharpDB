@@ -37,7 +37,7 @@ public class DBObject
     public bool IsAlive => (_wrappedData[Begin] & AliveFlag) == AliveFlag;
 
     /// <summary>
-    ///     Get data portion (without metadata).
+    ///     Get data portion (without metadata). Allocates a copy — prefer RawData+DataOffset for hot scan paths.
     /// </summary>
     public byte[] Data
     {
@@ -48,6 +48,16 @@ public class DBObject
             return result;
         }
     }
+
+    /// <summary>
+    ///     Zero-copy access to the underlying page buffer. Use with DataOffset for scan deserialization.
+    /// </summary>
+    public byte[] RawData => _wrappedData;
+
+    /// <summary>
+    ///     Absolute offset of the data portion within RawData (= Begin + MetaBytes).
+    /// </summary>
+    public int DataOffset => Begin + MetaBytes;
 
     private void Verify()
     {

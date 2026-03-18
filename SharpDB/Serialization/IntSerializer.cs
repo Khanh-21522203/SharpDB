@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using SharpDB.Core.Abstractions.Serialization;
 
 namespace SharpDB.Serialization;
@@ -6,13 +7,11 @@ public class IntSerializer : ISerializer<int>
 {
     public int Size => sizeof(int);
 
-    public byte[] Serialize(int obj)
-    {
-        return BitConverter.GetBytes(obj);
-    }
+    public byte[] Serialize(int obj) => BitConverter.GetBytes(obj);
 
-    public int Deserialize(byte[] bytes, int offset = 0)
-    {
-        return BitConverter.ToInt32(bytes, offset);
-    }
+    public void SerializeTo(int obj, Span<byte> dest) =>
+        BinaryPrimitives.WriteInt32LittleEndian(dest, obj);
+
+    public int Deserialize(byte[] bytes, int offset = 0) =>
+        BitConverter.ToInt32(bytes, offset);
 }

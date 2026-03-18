@@ -36,6 +36,14 @@ public class BinaryListSerializer<TV> : ISerializer<BinaryList<TV>>
         return bytes;
     }
 
+    public void SerializeTo(BinaryList<TV> list, Span<byte> dest)
+    {
+        var bytes = list.ToBytes();
+        bytes.AsSpan().CopyTo(dest);
+        if (bytes.Length < dest.Length)
+            dest[bytes.Length..].Clear();
+    }
+
     public BinaryList<TV> Deserialize(byte[] bytes, int offset = 0)
     {
         return BinaryList<TV>.FromBytes(bytes, _itemSerializer, offset);

@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.DataStructures;
 
@@ -43,7 +44,7 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
         get => BitConverter.ToInt32(_data, 1);
         protected set
         {
-            BitConverter.GetBytes(value).CopyTo(_data, 1);
+            BinaryPrimitives.WriteInt32LittleEndian(_data.AsSpan(1, 4), value);
             MarkModified();
         }
     }
@@ -75,13 +76,18 @@ public abstract class TreeNode<TK>(byte[] data, ISerializer<TK> keySerializer, i
         Modified = false;
     }
 
+    /// <summary>
+    ///     Patch all internal pointer references from <paramref name="old"/> to <paramref name="newPtr"/>.
+    ///     Called during deferred flush to update references to resolved temp pointers.
+    /// </summary>
+    public abstract void PatchPointer(Pointer old, Pointer newPtr);
+
     protected void SetKey(int index, TK key, int offset)
     {
         if (index < 0 || index >= _degree)
             throw new ArgumentOutOfRangeException(nameof(index));
 
-        var keyBytes = _keySerializer.Serialize(key);
-        Array.Copy(keyBytes, 0, _data, offset, keyBytes.Length);
+        _keySerializer.SerializeTo(key, _data.AsSpan(offset, _keySerializer.Size));
         MarkModified();
     }
 

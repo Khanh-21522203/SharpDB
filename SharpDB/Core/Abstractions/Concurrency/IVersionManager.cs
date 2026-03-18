@@ -14,6 +14,7 @@ public interface IVersionManager : IDisposable
     Task CommitAsync(long txnId, long commitTimestamp);
     Task AbortAsync(long txnId);
     Task GarbageCollectAsync(long minActiveTimestamp);
+    Task FlushStorageAsync();
 }
 
 public class VersionedRecord

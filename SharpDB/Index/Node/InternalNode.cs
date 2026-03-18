@@ -39,12 +39,21 @@ public class InternalNode<TK> : TreeNode<TK>
         // For internal nodes, we have KeyCount+1 children
         // So valid indices are 0 to KeyCount (inclusive)
         if (index < 0 || index > KeyCount)
-            throw new ArgumentOutOfRangeException(nameof(index), 
+            throw new ArgumentOutOfRangeException(nameof(index),
                 $"Index {index} is out of range for KeyCount {KeyCount}");
 
         var offset = _childrenOffset + index * Pointer.ByteSize;
-        pointer.ToBytes().CopyTo(_data, offset);
+        pointer.FillBytes(_data, offset);
         MarkModified();
+    }
+
+    public override void PatchPointer(Pointer old, Pointer newPtr)
+    {
+        for (var i = 0; i <= KeyCount; i++)
+        {
+            if (GetChild(i) == old)
+                SetChild(i, newPtr);
+        }
     }
 
     /// <summary>

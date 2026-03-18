@@ -19,19 +19,14 @@ public class InsertOperation<TK, TV>(
 
         if (rootPointer == null)
         {
+            // Empty tree: create root leaf, flush immediately to get a real pointer.
             var newRoot = nodeFactory.CreateLeafNode();
             newRoot.SetAsRoot();
             newRoot.Insert(key, value);
 
-            var pointer = await session.WriteAsync(newRoot);
-            
-            // Flush immediately to get the actual pointer
+            await session.WriteAsync(newRoot);
             await session.FlushAsync();
-            
-            // Update pointer with the actual persisted location
-            pointer = newRoot.Pointer;
-            
-            await storage.SetRootPointerAsync(indexId, pointer);
+            await storage.SetRootPointerAsync(indexId, newRoot.Pointer);
             return;
         }
 
@@ -39,32 +34,26 @@ public class InsertOperation<TK, TV>(
 
         if (root.IsFull())
         {
-            // Split root
+            // Root is full: split it, flush to resolve temp pointers, then update root pointer.
             var newRoot = nodeFactory.CreateInternalNode();
             newRoot.SetAsRoot();
             root.UnsetAsRoot();
-            
-            // Set the original root as the first child of the new root
             newRoot.SetChild(0, root.Pointer);
 
             await SplitChild(newRoot, 0, root);
-
-            var newRootPointer = await session.WriteAsync(newRoot);
-            
-            // Flush to persist the new root and get the actual pointer
-            await session.FlushAsync();
-            newRootPointer = newRoot.Pointer;
-            
-            await storage.SetRootPointerAsync(indexId, newRootPointer);
+            await session.WriteAsync(newRoot);
 
             await InsertNonFull(newRoot, key, value);
+
+            // Flush resolves all temp pointers (including newRoot's) via pointer patching.
+            await session.FlushAsync();
+            await storage.SetRootPointerAsync(indexId, newRoot.Pointer);
         }
         else
         {
+            // Normal insert: leaves nodes dirty in session, flushed at transaction commit.
             await InsertNonFull(root, key, value);
         }
-
-        await session.FlushAsync();
     }
 
     private async Task InsertNonFull(TreeNode<TK> node, TK key, TV value)
@@ -86,7 +75,7 @@ public class InsertOperation<TK, TV>(
                 var childIndex = FindChildIndex(internalNode, childPointer);
                 await SplitChild(internalNode, childIndex, child);
 
-                // Re-determine which child to insert into
+                // Re-determine which child to insert into after the split.
                 childPointer = internalNode.FindChild(key);
                 child = await session.ReadAsync(childPointer);
             }
@@ -108,11 +97,9 @@ public class InsertOperation<TK, TV>(
 
             rightLeaf.NextLeaf = leftLeaf.NextLeaf;
             var rightPointer = await session.WriteAsync(rightLeaf);
-            
-            // Flush right leaf to get actual pointer before referencing it
-            await session.FlushAsync();
-            rightPointer = rightLeaf.Pointer;
-            
+
+            // rightPointer is a temp pointer here. leftLeaf.NextLeaf stores it in _data bytes.
+            // BufferedIndexIOSession.FlushAsync() will patch it to the real pointer via PatchPointer.
             leftLeaf.NextLeaf = rightPointer;
             await session.WriteAsync(leftLeaf);
 
@@ -126,20 +113,14 @@ public class InsertOperation<TK, TV>(
 
             var (rightKeys, middleKey, rightChildren) = leftInternal.SplitAndGetKeys();
 
-            // First set the leftmost child
             rightInternal.SetChild(0, rightChildren[0]);
-            
-            // Then insert keys with their right children
+
             for (var i = 0; i < rightKeys.Length; i++) rightInternal.InsertChild(rightKeys[i], rightChildren[i + 1]);
 
             var rightPointer = await session.WriteAsync(rightInternal);
             await session.WriteAsync(leftInternal);
-            
-            // Flush to get actual pointers
-            await session.FlushAsync();
-            rightPointer = rightInternal.Pointer;
 
-            // Use middleKey (not rightKeys[0]) to promote to parent
+            // rightPointer is temp; parent will be patched by FlushAsync when it's resolved.
             parent.InsertChild(middleKey, rightPointer);
             await session.WriteAsync(parent);
         }

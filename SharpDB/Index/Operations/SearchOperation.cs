@@ -57,6 +57,40 @@ public class SearchOperation<TK, TV>(
         }
     }
 
+    /// <summary>
+    /// Count all keys by traversing leaf nodes via NextLeaf links.
+    /// Much faster than RangeSearchAsync because it avoids value deserialization.
+    /// </summary>
+    public async Task<int> CountLeafKeysAsync()
+    {
+        var rootPointer = await storage.GetRootPointerAsync(indexId);
+        if (rootPointer == null)
+            return 0;
+
+        // Navigate to the leftmost leaf
+        var current = await session.ReadAsync(rootPointer.Value);
+        while (!current.IsLeaf)
+        {
+            var internalNode = (InternalNode<TK>)current;
+            current = await session.ReadAsync(internalNode.GetChild(0));
+        }
+
+        // Traverse all leaves via NextLeaf, summing KeyCount
+        var count = 0;
+        var leaf = (LeafNode<TK, TV>)current;
+        while (true)
+        {
+            count += leaf.KeyCount;
+            if (leaf.NextLeaf == null)
+                break;
+
+            var nextNode = await session.ReadAsync(leaf.NextLeaf.Value);
+            leaf = (LeafNode<TK, TV>)nextNode;
+        }
+
+        return count;
+    }
+
     private async Task<LeafNode<TK, TV>> FindLeafAsync(TK key, Pointer startPointer)
     {
         var current = await session.ReadAsync(startPointer);

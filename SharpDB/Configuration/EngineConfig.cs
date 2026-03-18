@@ -11,6 +11,12 @@ public class EngineConfig
     public bool UseBufferedIO { get; set; } = true;
     public IsolationLevel DefaultIsolationLevel { get; set; } = IsolationLevel.ReadCommitted;
     
+    /// <summary>
+    /// When true, fsync is called after every index/data write for crash durability without WAL.
+    /// Set to false for higher write throughput when WAL is enabled or durability is not required.
+    /// </summary>
+    public bool SyncOnWrite { get; set; } = true;
+
     // WAL Configuration
     public bool EnableWAL { get; set; } = true;
     public int WALMaxFileSize { get; set; } = 10 * 1024 * 1024; // 10MB default
@@ -30,6 +36,7 @@ public class EngineConfig
         MaxFileHandles = 500,
         BTreeDegree = 256,
         UseBufferedIO = true,
+        SyncOnWrite = false,
         Cache = new CacheConfig
         {
             PageCacheSize = 10000,

@@ -9,6 +9,7 @@ public interface IIndexHeaderManager
     Task<IndexMetadata?> GetMetadataAsync(int indexId);
     Task SaveMetadataAsync(int indexId, IndexMetadata metadata);
     Task DeleteIndexAsync(int indexId);
+    Task FlushAsync();
 }
 
 public class IndexMetadata

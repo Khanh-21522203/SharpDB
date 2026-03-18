@@ -70,11 +70,18 @@ public class LeafNode<TK, TV> : TreeNode<TK>
             else
             {
                 _data[_nextPointerOffset] = 1;
-                value.Value.ToBytes().CopyTo(_data, _nextPointerOffset + 1);
+                value.Value.FillBytes(_data, _nextPointerOffset + 1);
             }
 
             MarkModified();
         }
+    }
+
+    public override void PatchPointer(Pointer old, Pointer newPtr)
+    {
+        var current = NextLeaf;
+        if (current.HasValue && current.Value == old)
+            NextLeaf = newPtr;
     }
 
     public void Insert(TK key, TV value)
@@ -210,17 +217,13 @@ public class LeafNode<TK, TV> : TreeNode<TK>
     private void SetValueAt(int index, TV value)
     {
         var offset = _valuesOffset + index * _valueSerializer.Size;
-        var valueBytes = _valueSerializer.Serialize(value);
-        
-        // Check if we have enough space
+
         if (offset + _valueSerializer.Size > _data.Length)
-        {
             throw new InvalidOperationException(
                 $"Not enough space in data array. Offset: {offset}, ValueSize: {_valueSerializer.Size}, " +
                 $"DataLength: {_data.Length}, ValuesOffset: {_valuesOffset}, Index: {index}");
-        }
-        
-        Array.Copy(valueBytes, 0, _data, offset, _valueSerializer.Size);
+
+        _valueSerializer.SerializeTo(value, _data.AsSpan(offset, _valueSerializer.Size));
         MarkModified();
     }
 

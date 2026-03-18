@@ -1,3 +1,5 @@
+using System.Buffers.Binary;
+
 namespace SharpDB.DataStructures;
 
 public record struct Pointer(byte Type, long Position, int Chunk) : IComparable<Pointer>
@@ -41,17 +43,22 @@ public record struct Pointer(byte Type, long Position, int Chunk) : IComparable<
     public byte[] ToBytes()
     {
         var buffer = new byte[ByteSize];
-        buffer[0] = Type;
-        BitConverter.GetBytes(Position).CopyTo(buffer, 1);
-        BitConverter.GetBytes(Chunk).CopyTo(buffer, 9);
+        FillBytes(buffer, 0);
         return buffer;
     }
 
     public void FillBytes(byte[] target, int offset)
     {
         target[offset] = Type;
-        BitConverter.GetBytes(Position).CopyTo(target, offset + 1);
-        BitConverter.GetBytes(Chunk).CopyTo(target, offset + 9);
+        BinaryPrimitives.WriteInt64LittleEndian(target.AsSpan(offset + 1, 8), Position);
+        BinaryPrimitives.WriteInt32LittleEndian(target.AsSpan(offset + 9, 4), Chunk);
+    }
+
+    public void FillBytes(Span<byte> dest)
+    {
+        dest[0] = Type;
+        BinaryPrimitives.WriteInt64LittleEndian(dest[1..], Position);
+        BinaryPrimitives.WriteInt32LittleEndian(dest[9..], Chunk);
     }
 
     public static Pointer FromBytes(byte[] bytes, int offset = 0)

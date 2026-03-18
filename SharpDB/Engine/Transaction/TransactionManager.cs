@@ -16,6 +16,7 @@ public class TransactionManager : ITransactionManager
     private readonly bool _walEnabled;
     private readonly int _walCheckpointInterval;
     private readonly Func<Task<long>>? _checkpointFactory;
+    private readonly Func<Task>? _indexFlushAsync;
     private long _currentTimestamp = 1;
     private long _pendingCheckpointCount;
     private int _checkpointWorkerRunning;
@@ -30,7 +31,8 @@ public class TransactionManager : ITransactionManager
         bool walEnabled = false,
         bool walAutoCheckpoint = false,
         int walCheckpointInterval = 0,
-        Func<Task<long>>? checkpointFactory = null)
+        Func<Task<long>>? checkpointFactory = null,
+        Func<Task>? indexFlushAsync = null)
     {
         _lockManager = lockManager;
         _versionManager = versionManager;
@@ -40,6 +42,7 @@ public class TransactionManager : ITransactionManager
         _walAutoCheckpoint = walAutoCheckpoint;
         _walCheckpointInterval = walCheckpointInterval;
         _checkpointFactory = checkpointFactory;
+        _indexFlushAsync = indexFlushAsync;
     }
 
     public Task<ITransaction> BeginTransactionAsync(IsolationLevel level = IsolationLevel.ReadCommitted)
@@ -72,6 +75,8 @@ public class TransactionManager : ITransactionManager
         _walManager?.Flush();
 
         await _versionManager.CommitAsync(transaction.TransactionId, commitTimestamp);
+        await _versionManager.FlushStorageAsync();
+        if (_indexFlushAsync != null) await _indexFlushAsync();
         await _lockManager.ReleaseAllLocksAsync(new TransactionId(transaction.TransactionId));
 
         TryScheduleCheckpoint();
@@ -93,6 +98,8 @@ public class TransactionManager : ITransactionManager
         }
 
         await _versionManager.AbortAsync(transaction.TransactionId);
+        await _versionManager.FlushStorageAsync();
+        if (_indexFlushAsync != null) await _indexFlushAsync();
         await _lockManager.ReleaseAllLocksAsync(new TransactionId(transaction.TransactionId));
 
         if (rollbackActionFailure != null)

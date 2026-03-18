@@ -20,6 +20,8 @@ public class DiskPageDatabaseStorageManager(
 {
     private readonly ConcurrentDictionary<int, Page.Page> _activePages = new();
     private readonly ConcurrentDictionary<int, long> _currentPagePositions = new();
+    // Tracks pages modified by in-place updates/deletes that need flushing.
+    private readonly ConcurrentDictionary<(int CollectionId, int PageNumber), Page.Page> _dirtyPages = new();
     private readonly IDatabaseHeaderManager _headerManager = headerManager;
     private readonly EngineConfig _config = config;
     private bool _disposed;
@@ -121,11 +123,9 @@ public class DiskPageDatabaseStorageManager(
                 $"Cannot update with larger data. Current: {dbObject.DataSize}, New: {data.Length}. " +
                 "Delete and re-insert instead.");
 
-        // Update in-place
+        // Update in-place and mark dirty for batched flush.
         dbObject.ModifyData(data);
-
-        // Write modified page
-        await pageManager.WritePageAsync(pointer.Chunk, dbObject.Page);
+        _dirtyPages[(pointer.Chunk, dbObject.Page.PageNumber)] = dbObject.Page;
 
         logger.Debug("Updated object at {Pointer}", pointer);
     }
@@ -140,11 +140,9 @@ public class DiskPageDatabaseStorageManager(
             return;
         }
 
-        // Soft delete
+        // Soft delete and mark dirty for batched flush.
         dbObject.MarkDeleted();
-
-        // Write modified page
-        await pageManager.WritePageAsync(pointer.Chunk, dbObject.Page);
+        _dirtyPages[(pointer.Chunk, dbObject.Page.PageNumber)] = dbObject.Page;
 
         logger.Debug("Deleted object at {Pointer}", pointer);
     }
@@ -156,6 +154,19 @@ public class DiskPageDatabaseStorageManager(
         {
             await pageManager.WritePageAsync(collectionId, activePage);
             logger.Debug("Flushed active page {PageNum} before scan", activePage.PageNumber);
+        }
+
+        // Flush any deferred dirty pages for this collection so scan sees latest state
+        foreach (var kvp in _dirtyPages)
+        {
+            if (kvp.Key.CollectionId != collectionId)
+                continue;
+
+            var page = kvp.Value;
+            if (activePage != null && activePage.PageNumber == page.PageNumber)
+                continue; // Already flushed above
+
+            await pageManager.WritePageAsync(collectionId, page);
         }
         
         // Scan all pages from disk
@@ -187,15 +198,30 @@ public class DiskPageDatabaseStorageManager(
 
     public async Task FlushAsync()
     {
-        // Write ALL active pages to disk, not just modified ones
+        // Write active pages
         var flushTasks = _activePages.Select(async kvp =>
         {
             await pageManager.WritePageAsync(kvp.Key, kvp.Value);
-            logger.Debug("Flushed page {PageNumber} for collection {CollectionId}", 
+            logger.Debug("Flushed page {PageNumber} for collection {CollectionId}",
                 kvp.Value.PageNumber, kvp.Key);
         });
 
         await Task.WhenAll(flushTasks);
+
+        // Write dirty pages (modified by in-place updates/deletes) that weren't active pages
+        foreach (var kvp in _dirtyPages)
+        {
+            var (collectionId, _) = kvp.Key;
+            var page = kvp.Value;
+
+            // Skip if it's already an active page (already flushed above)
+            if (_activePages.TryGetValue(collectionId, out var activePage) && activePage.PageNumber == page.PageNumber)
+                continue;
+
+            await pageManager.WritePageAsync(collectionId, page);
+        }
+
+        _dirtyPages.Clear();
 
         logger.Information("Flushed {Count} active pages", _activePages.Count);
     }

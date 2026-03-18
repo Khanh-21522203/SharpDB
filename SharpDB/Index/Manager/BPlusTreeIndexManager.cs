@@ -120,12 +120,9 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         await _gate.WaitAsync();
         try
         {
-            var count = 0;
-            // Scan entire tree from minimum to maximum possible values
-            var minKey = GetMinValue<TK>();
-            var maxKey = GetMaxValue<TK>();
-            await foreach (var _ in _searchOp.RangeSearchAsync(minKey, maxKey)) count++;
-            return count;
+            // Traverse leaf nodes via NextLeaf links, summing KeyCount.
+            // Avoids deserializing values — much faster than a full range scan.
+            return await _searchOp.CountLeafKeysAsync();
         }
         finally
         {

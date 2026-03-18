@@ -75,22 +75,34 @@ public sealed class PageDataWorkspace(IDatabaseStorageManager storage, int pageS
 
     private async Task FlushBufferedChangesAsync(int collectionId)
     {
-        foreach (var (pointer, data) in _updateBuffer.ToList())
+        if (_updateBuffer.Count > 0)
         {
-            if (collectionId >= 0 && pointer.Chunk != collectionId)
-                continue;
+            var updateKeys = new List<Pointer>(_updateBuffer.Count);
+            foreach (var (pointer, data) in _updateBuffer)
+            {
+                if (collectionId >= 0 && pointer.Chunk != collectionId)
+                    continue;
 
-            await storage.UpdateAsync(pointer, data);
-            _updateBuffer.Remove(pointer);
+                await storage.UpdateAsync(pointer, data);
+                updateKeys.Add(pointer);
+            }
+            foreach (var key in updateKeys)
+                _updateBuffer.Remove(key);
         }
 
-        foreach (var pointer in _deleteBuffer.ToList())
+        if (_deleteBuffer.Count > 0)
         {
-            if (collectionId >= 0 && pointer.Chunk != collectionId)
-                continue;
+            var deleteKeys = new List<Pointer>(_deleteBuffer.Count);
+            foreach (var pointer in _deleteBuffer)
+            {
+                if (collectionId >= 0 && pointer.Chunk != collectionId)
+                    continue;
 
-            await storage.DeleteAsync(pointer);
-            _deleteBuffer.Remove(pointer);
+                await storage.DeleteAsync(pointer);
+                deleteKeys.Add(pointer);
+            }
+            foreach (var key in deleteKeys)
+                _deleteBuffer.Remove(key);
         }
 
         await storage.FlushAsync();

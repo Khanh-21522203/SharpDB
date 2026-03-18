@@ -40,6 +40,11 @@ public class FileHandlerPool : IFileHandlerPool
         if (string.IsNullOrEmpty(filePath))
             throw new ArgumentException("File path cannot be empty", nameof(filePath));
 
+        // Fast path: return existing open handle without acquiring semaphores.
+        // ConcurrentDictionary.TryGetValue is lock-free on the read side.
+        if (_handles.TryGetValue(filePath, out var fastHandle) && fastHandle.CanRead && fastHandle.CanWrite)
+            return fastHandle;
+
         // Wait for global limit
         await _globalLimit.WaitAsync();
 

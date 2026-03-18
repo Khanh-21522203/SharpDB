@@ -9,6 +9,7 @@ public class IndexHeaderManager : IIndexHeaderManager
     private readonly string _headerFilePath;
     private readonly ConcurrentDictionary<int, IndexMetadata> _metadata = new();
     private readonly ConcurrentDictionary<int, Pointer?> _rootPointers = new();
+    private volatile bool _dirty;
 
     public IndexHeaderManager(string basePath)
     {
@@ -22,10 +23,11 @@ public class IndexHeaderManager : IIndexHeaderManager
         return Task.FromResult(pointer);
     }
 
-    public async Task SetRootPointerAsync(int indexId, Pointer pointer)
+    public Task SetRootPointerAsync(int indexId, Pointer pointer)
     {
         _rootPointers[indexId] = pointer;
-        await SaveHeaders();
+        _dirty = true;
+        return Task.CompletedTask;
     }
 
     public Task<IndexMetadata?> GetMetadataAsync(int indexId)
@@ -34,17 +36,27 @@ public class IndexHeaderManager : IIndexHeaderManager
         return Task.FromResult(meta);
     }
 
-    public async Task SaveMetadataAsync(int indexId, IndexMetadata metadata)
+    public Task SaveMetadataAsync(int indexId, IndexMetadata metadata)
     {
         metadata.ModifiedAt = DateTime.UtcNow;
         _metadata[indexId] = metadata;
-        await SaveHeaders();
+        _dirty = true;
+        return Task.CompletedTask;
     }
 
     public async Task DeleteIndexAsync(int indexId)
     {
         _rootPointers.TryRemove(indexId, out _);
         _metadata.TryRemove(indexId, out _);
+        await SaveHeaders();
+    }
+
+    public async Task FlushAsync()
+    {
+        if (!_dirty)
+            return;
+
+        _dirty = false;
         await SaveHeaders();
     }
 
