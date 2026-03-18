@@ -482,3 +482,10 @@ $RECYCLE.BIN/
 
 # Vim temporary swap files
 *.swp
+
+
+.claude/
+test-database/
+TestSecondaryIndex/
+tasks/
+*/benchmark-db-*/

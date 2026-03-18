@@ -7,9 +7,11 @@ public class LockManager : ILockManager
 {
     private readonly ConcurrentDictionary<ResourceId, LockEntry> _locks = new();
     private readonly ConcurrentDictionary<TransactionId, HashSet<ResourceId>> _txnLocks = new();
-    private readonly ConcurrentDictionary<string, HashSet<ResourceId>> _rangeLocks = new();
+    private readonly ConcurrentDictionary<string, RangeLockState> _rangeLocks = new();
+    private readonly ConcurrentDictionary<TransactionId, HashSet<string>> _txnRangeLocks = new();
     private readonly DeadlockDetector _deadlockDetector = new();
     private readonly Lock _deadlockLock = new();
+    private readonly Lock _rangeSync = new();
 
     public async Task<bool> AcquireLockAsync(
         ResourceId resourceId,
@@ -86,6 +88,15 @@ public class LockManager : ILockManager
         if (_txnLocks.TryRemove(txnId, out var resources))
             foreach (var resourceId in resources)
                 await ReleaseLockAsync(resourceId, txnId);
+
+        if (_txnRangeLocks.TryRemove(txnId, out var rangeKeys))
+        {
+            foreach (var rangeKey in rangeKeys.ToList())
+            {
+                if (_rangeLocks.TryGetValue(rangeKey, out var state) && state.Owner == txnId)
+                    await ReleaseRangeLockAsync(state.StartId, state.EndId, txnId);
+            }
+        }
     }
 
     public Task<bool> IsLockedAsync(ResourceId resourceId)
@@ -95,44 +106,46 @@ public class LockManager : ILockManager
 
     public async Task<bool> AcquireRangeLockAsync(ResourceId startId, ResourceId endId, TransactionId txnId, LockMode mode, TimeSpan timeout)
     {
-        // Simple implementation: lock all resources in the range
-        // In a real database, this would use a more sophisticated approach like predicate locks
-        var rangeKey = $"{startId.Type}:{startId.Id}-{endId.Id}";
-        var rangeResources = _rangeLocks.GetOrAdd(rangeKey, _ => new HashSet<ResourceId>());
-        
-        // For simplicity, we're treating range locks as a set of individual locks
-        // This prevents phantom reads by locking the entire range
-        var lockTasks = new List<Task<bool>>();
-        
-        // Lock the range boundaries and track them
-        lockTasks.Add(AcquireLockAsync(startId, txnId, mode, timeout));
-        lockTasks.Add(AcquireLockAsync(endId, txnId, mode, timeout));
-        
-        // Add range markers to prevent new inserts in this range
-        rangeResources.Add(startId);
-        rangeResources.Add(endId);
-        
-        var results = await Task.WhenAll(lockTasks);
-        return results.All(r => r);
+        var rangeKey = GetRangeKey(startId, endId);
+
+        var startLocked = await AcquireLockAsync(startId, txnId, mode, timeout);
+        if (!startLocked)
+            return false;
+
+        var endLocked = await AcquireLockAsync(endId, txnId, mode, timeout);
+        if (!endLocked)
+        {
+            await ReleaseLockAsync(startId, txnId);
+            return false;
+        }
+
+        lock (_rangeSync)
+        {
+            _rangeLocks[rangeKey] = new RangeLockState(startId, endId, txnId);
+            var byTxn = _txnRangeLocks.GetOrAdd(txnId, _ => new HashSet<string>());
+            byTxn.Add(rangeKey);
+        }
+
+        return true;
     }
     
     public async Task ReleaseRangeLockAsync(ResourceId startId, ResourceId endId, TransactionId txnId)
     {
-        var rangeKey = $"{startId.Type}:{startId.Id}-{endId.Id}";
-        
-        if (_rangeLocks.TryGetValue(rangeKey, out var rangeResources))
+        var rangeKey = GetRangeKey(startId, endId);
+
+        await ReleaseLockAsync(startId, txnId);
+        await ReleaseLockAsync(endId, txnId);
+
+        lock (_rangeSync)
         {
-            // Release individual locks
-            await ReleaseLockAsync(startId, txnId);
-            await ReleaseLockAsync(endId, txnId);
-            
-            // Clear range tracking
-            rangeResources.Remove(startId);
-            rangeResources.Remove(endId);
-            
-            if (rangeResources.Count == 0)
-            {
+            if (_rangeLocks.TryGetValue(rangeKey, out var state) && state.Owner == txnId)
                 _rangeLocks.TryRemove(rangeKey, out _);
+
+            if (_txnRangeLocks.TryGetValue(txnId, out var keys))
+            {
+                keys.Remove(rangeKey);
+                if (keys.Count == 0)
+                    _txnRangeLocks.TryRemove(txnId, out _);
             }
         }
     }
@@ -142,6 +155,7 @@ public class LockManager : ILockManager
         _locks.Clear();
         _txnLocks.Clear();
         _rangeLocks.Clear();
+        _txnRangeLocks.Clear();
     }
 
     private TransactionId? GetCurrentLockHolder(ResourceId resourceId)
@@ -155,4 +169,11 @@ public class LockManager : ILockManager
         }
         return null;
     }
+
+    private static string GetRangeKey(ResourceId startId, ResourceId endId)
+    {
+        return $"{startId.Type}:{startId.Id}-{endId.Id}";
+    }
+
+    private sealed record RangeLockState(ResourceId StartId, ResourceId EndId, TransactionId Owner);
 }

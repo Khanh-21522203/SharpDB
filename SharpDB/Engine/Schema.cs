@@ -3,6 +3,7 @@ namespace SharpDB.Engine;
 public class Schema
 {
     public List<Field> Fields { get; set; } = new();
+    public List<ForeignKeyConstraint> ForeignKeys { get; set; } = new();
     public int Version { get; set; } = 1;
     public Field? PrimaryKey => Fields.FirstOrDefault(f => f.IsPrimaryKey);
 
@@ -27,6 +28,21 @@ public class Schema
 
         if (duplicates.Any())
             throw new InvalidOperationException($"Duplicate field names: {string.Join(", ", duplicates)}");
+
+        foreach (var fk in ForeignKeys)
+        {
+            if (string.IsNullOrWhiteSpace(fk.FieldName))
+                throw new InvalidOperationException("Foreign key field name cannot be empty");
+
+            if (string.IsNullOrWhiteSpace(fk.ReferencedCollection))
+                throw new InvalidOperationException($"Foreign key '{fk.FieldName}' must define referenced collection");
+
+            if (string.IsNullOrWhiteSpace(fk.ReferencedField))
+                throw new InvalidOperationException($"Foreign key '{fk.FieldName}' must define referenced field");
+
+            if (GetField(fk.FieldName) == null)
+                throw new InvalidOperationException($"Foreign key field '{fk.FieldName}' not found in schema");
+        }
     }
 
     public bool Matches(Type type)

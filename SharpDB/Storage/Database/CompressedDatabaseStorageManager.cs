@@ -38,7 +38,9 @@ public class CompressedDatabaseStorageManager(
         if (IsCompressed(data))
         {
             var decompressed = Decompress(data);
-            dbObject.ModifyData(decompressed);
+            var pageSize = Math.Max(512, Page.Page.HeaderSize + DBObject.MetaBytes + decompressed.Length);
+            var page = new Page.Page(0, pageSize, dbObject.CollectionId);
+            return page.AllocateObject(dbObject.SchemeId, dbObject.Version, decompressed);
         }
 
         return dbObject;
@@ -58,9 +60,24 @@ public class CompressedDatabaseStorageManager(
         return _inner.DeleteAsync(pointer);
     }
 
-    public IAsyncEnumerable<DBObject> ScanAsync(int collectionId)
+    public async IAsyncEnumerable<DBObject> ScanAsync(int collectionId)
     {
-        return _inner.ScanAsync(collectionId);
+        await foreach (var dbObject in _inner.ScanAsync(collectionId))
+        {
+            var data = dbObject.Data;
+            if (!IsCompressed(data))
+            {
+                yield return dbObject;
+                continue;
+            }
+
+            var decompressed = Decompress(data);
+            var pageSize = Math.Max(512, Page.Page.HeaderSize + DBObject.MetaBytes + decompressed.Length);
+            var page = new Page.Page(0, pageSize, dbObject.CollectionId);
+            var decompressedObject = page.AllocateObject(dbObject.SchemeId, dbObject.Version, decompressed);
+            if (decompressedObject != null)
+                yield return decompressedObject;
+        }
     }
 
     public Task FlushAsync()

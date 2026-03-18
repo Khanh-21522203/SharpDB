@@ -6,67 +6,53 @@ using SharpDB.Storage.Page;
 
 namespace SharpDB.Storage.Sessions;
 
-public class BufferedDataIOSession(IDatabaseStorageManager storage, EngineConfig config) : IDataIOSession
+public class BufferedDataIOSession : IDataIOSession
 {
-    private readonly HashSet<Pointer> _deleteBuffer = [];
-    private readonly Dictionary<Pointer, byte[]> _updateBuffer = new();
-    private readonly EngineConfig _config = config;
+    private readonly IPageDataWorkspace _workspace;
+
+    public BufferedDataIOSession(IPageDataWorkspace workspace)
+    {
+        _workspace = workspace;
+    }
+
+    public BufferedDataIOSession(IDatabaseStorageManager storage, EngineConfig config)
+        : this(new PageDataWorkspace(storage, config.PageSize))
+    {
+    }
 
     public async Task<Pointer> StoreAsync(int schemeId, int collectionId, int version, byte[] data)
     {
-        // Directly store to get real pointer
-        var pointer = await storage.StoreAsync(schemeId, collectionId, version, data);
-        
-        // Don't flush after every insert - let the caller decide when to flush
-        
-        return pointer;
+        return await _workspace.ApplyAsync(new DataMutation.Insert(
+            collectionId,
+            schemeId,
+            version,
+            data,
+            Durability.Buffered));
     }
 
     public async Task<DBObject?> SelectAsync(Pointer pointer)
     {
-        // Check if in update buffer
-        if (_updateBuffer.TryGetValue(pointer, out var data))
-        {
-            // Return modified version (use pointer.Chunk as collectionId)
-            var page = new Page.Page(0, _config.PageSize, pointer.Chunk);
-            return page.AllocateObject(0, 1, data);
-        }
-
-        // Check if deleted
-        if (_deleteBuffer.Contains(pointer))
-            return null;
-
-        return await storage.SelectAsync(pointer);
+        return await _workspace.ReadAsync(pointer, ReadVisibility.Session);
     }
 
-    public Task UpdateAsync(Pointer pointer, byte[] data)
+    public async Task UpdateAsync(Pointer pointer, byte[] data)
     {
-        _updateBuffer[pointer] = data;
-        return Task.CompletedTask;
+        await _workspace.ApplyAsync(new DataMutation.Update(pointer, data, Durability.Buffered));
     }
 
-    public Task DeleteAsync(Pointer pointer)
+    public async Task DeleteAsync(Pointer pointer)
     {
-        _deleteBuffer.Add(pointer);
-        return Task.CompletedTask;
+        await _workspace.ApplyAsync(new DataMutation.Delete(pointer, Durability.Buffered));
     }
 
     public IAsyncEnumerable<DBObject> ScanAsync(int collectionId)
     {
-        return storage.ScanAsync(collectionId);
+        return _workspace.ScanAsync(collectionId, ScanVisibility.Committed);
     }
 
     public async Task FlushAsync()
     {
-        // Process updates
-        foreach (var (pointer, data) in _updateBuffer) await storage.UpdateAsync(pointer, data);
-        _updateBuffer.Clear();
-
-        // Process deletes
-        foreach (var pointer in _deleteBuffer) await storage.DeleteAsync(pointer);
-        _deleteBuffer.Clear();
-
-        await storage.FlushAsync();
+        await _workspace.ApplyAsync(new DataMutation.Commit());
     }
 
     public void Dispose()

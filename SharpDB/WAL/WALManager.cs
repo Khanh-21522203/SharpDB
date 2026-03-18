@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using Serilog;
+using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
 
 namespace SharpDB.WAL;
@@ -12,6 +13,7 @@ public class WALManager : IDisposable
 {
     private readonly string _logDirectory;
     private readonly ILogger _logger = Log.ForContext<WALManager>();
+    private readonly IDatabaseStorageManager? _recoveryStorage;
     private readonly object _writeLock = new();
     private readonly ConcurrentDictionary<long, long> _transactionLastLSN = new();
     
@@ -28,9 +30,13 @@ public class WALManager : IDisposable
     private readonly Timer _flushTimer;
     private readonly int _flushIntervalMs = 100; // Flush every 100ms
     
-    public WALManager(string basePath, int maxLogFileSize = 10 * 1024 * 1024) // 10MB default
+    public WALManager(
+        string basePath,
+        IDatabaseStorageManager? recoveryStorage = null,
+        int maxLogFileSize = 10 * 1024 * 1024) // 10MB default
     {
         _logDirectory = Path.Combine(basePath, "wal");
+        _recoveryStorage = recoveryStorage;
         _maxLogFileSize = maxLogFileSize;
         
         Directory.CreateDirectory(_logDirectory);
@@ -158,6 +164,36 @@ public class WALManager : IDisposable
         
         return WriteLogRecord(record);
     }
+
+    /// <summary>
+    /// Log an insert operation.
+    /// </summary>
+    public long LogInsert(long transactionId, int collectionId, Pointer pagePointer, byte[] afterImage)
+    {
+        var record = new UpdateLogRecord(transactionId, collectionId, pagePointer)
+        {
+            Type = LogRecordType.Insert,
+            BeforeImage = Array.Empty<byte>(),
+            AfterImage = afterImage
+        };
+
+        return WriteLogRecord(record);
+    }
+
+    /// <summary>
+    /// Log a delete operation.
+    /// </summary>
+    public long LogDelete(long transactionId, int collectionId, Pointer pagePointer, byte[] beforeImage)
+    {
+        var record = new UpdateLogRecord(transactionId, collectionId, pagePointer)
+        {
+            Type = LogRecordType.Delete,
+            BeforeImage = beforeImage,
+            AfterImage = Array.Empty<byte>()
+        };
+
+        return WriteLogRecord(record);
+    }
     
     /// <summary>
     /// Create a checkpoint
@@ -238,6 +274,9 @@ public class WALManager : IDisposable
                 await UndoTransaction(txnId, records);
             }
         }
+
+        if (_recoveryStorage != null)
+            await _recoveryStorage.FlushAsync();
         
         _logger.Information("Recovery completed. Committed: {Committed}, Aborted: {Aborted}, Rolled back: {RolledBack}",
             result.CommittedTransactions, result.AbortedTransactions, result.UnfinishedTransactions);
@@ -312,8 +351,7 @@ public class WALManager : IDisposable
                 {
                     if (record is UpdateLogRecord updateRecord)
                     {
-                        // Apply the after image
-                        await ApplyUpdate(updateRecord);
+                        await ApplyRedo(updateRecord);
                     }
                 }
             }
@@ -351,49 +389,78 @@ public class WALManager : IDisposable
         LogTransactionAbort(transactionId);
     }
     
-    private async Task ApplyUpdate(UpdateLogRecord record)
+    private async Task ApplyRedo(UpdateLogRecord record)
     {
-        // TODO: Apply the update to the actual page
-        // This would interact with PageManager to apply the after image
-        _logger.Debug("Applying update for collection {CollectionId} at pointer {Pointer}", 
-            record.CollectionId, record.PagePointer);
+        switch (record.Type)
+        {
+            case LogRecordType.Insert:
+                await ApplyInsert(record);
+                return;
+            case LogRecordType.Delete:
+                await ApplyDelete(record);
+                return;
+            case LogRecordType.CLR:
+            case LogRecordType.Update:
+            default:
+                await ApplyImage(record.PagePointer, record.CollectionId, record.AfterImage, "REDO");
+                return;
+        }
     }
     
     private async Task ApplyUndo(UpdateLogRecord record)
     {
-        // TODO: Apply the undo to the actual page
-        // This would interact with PageManager to apply the before image
-        _logger.Debug("Applying undo for collection {CollectionId} at pointer {Pointer}", 
-            record.CollectionId, record.PagePointer);
+        switch (record.Type)
+        {
+            case LogRecordType.Insert:
+                // Undo insert => delete inserted row.
+                await ApplyDelete(record);
+                return;
+            case LogRecordType.Delete:
+                // Undo delete => restore before image.
+                await ApplyRestore(record);
+                return;
+            case LogRecordType.CLR:
+            case LogRecordType.Update:
+            default:
+                await ApplyImage(record.PagePointer, record.CollectionId, record.BeforeImage, "UNDO");
+                return;
+        }
     }
     
     private LogRecord? ReadLogRecord(BinaryReader reader)
     {
         if (reader.BaseStream.Position >= reader.BaseStream.Length)
             return null;
-            
-        var typeByte = reader.ReadByte();
-        var type = (LogRecordType)typeByte;
-        
-        // Read the rest based on type
+
+        if (reader.BaseStream.Length - reader.BaseStream.Position < sizeof(int))
+            return null;
+
+        var size = reader.ReadInt32();
+        if (size <= 0)
+            throw new InvalidOperationException($"Invalid WAL record size: {size}");
+
+        var payload = reader.ReadBytes(size);
+        if (payload.Length != size)
+            return null;
+
+        var type = (LogRecordType)payload[0];
+
         LogRecord record = type switch
         {
             LogRecordType.Begin => new BeginLogRecord(0),
             LogRecordType.Commit => new CommitLogRecord(0),
             LogRecordType.Abort => new AbortLogRecord(0),
             LogRecordType.Update => new UpdateLogRecord(0, 0, Pointer.Empty()),
+            LogRecordType.Insert => new UpdateLogRecord(0, 0, Pointer.Empty()) { Type = LogRecordType.Insert },
+            LogRecordType.Delete => new UpdateLogRecord(0, 0, Pointer.Empty()) { Type = LogRecordType.Delete },
+            LogRecordType.CLR => new UpdateLogRecord(0, 0, Pointer.Empty()) { Type = LogRecordType.CLR },
             LogRecordType.CheckpointStart => new CheckpointLogRecord(true),
             LogRecordType.CheckpointEnd => new CheckpointLogRecord(false),
             _ => throw new InvalidOperationException($"Unknown log record type: {type}")
         };
-        
-        // Read size first to know how much to read
-        var size = reader.ReadInt32();
-        var data = new byte[size];
-        data[0] = typeByte;
-        reader.Read(data, 1, size - 1);
-        
-        record.Deserialize(data);
+
+        record.Deserialize(payload);
+        record.Type = type;
         return record;
     }
     
@@ -461,6 +528,165 @@ public class WALManager : IDisposable
         }
         
         return lastLSN;
+    }
+
+    private async Task ApplyImage(Pointer pointer, int collectionId, byte[] image, string phase)
+    {
+        if (_recoveryStorage == null)
+        {
+            _logger.Warning("Skipping {Phase} apply because recovery storage is not configured", phase);
+            return;
+        }
+
+        if (image.Length == 0 || pointer.Type != Pointer.TypeData || pointer.Position <= 0)
+            return;
+
+        try
+        {
+            var existing = await _recoveryStorage.SelectAsync(pointer);
+            if (existing == null)
+            {
+                _logger.Warning(
+                    "Skipping {Phase} apply at {Pointer}: pointer not found in storage (collection {CollectionId})",
+                    phase,
+                    pointer,
+                    collectionId);
+                return;
+            }
+
+            if (image.Length > existing.DataSize)
+            {
+                _logger.Warning(
+                    "Skipping {Phase} apply at {Pointer}: image size {Size} exceeds current slot {SlotSize}",
+                    phase,
+                    pointer,
+                    image.Length,
+                    existing.DataSize);
+                return;
+            }
+
+            await _recoveryStorage.UpdateAsync(pointer, image);
+            _logger.Debug(
+                "Applied {Phase} image for collection {CollectionId} at pointer {Pointer}",
+                phase,
+                collectionId,
+                pointer);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(
+                ex,
+                "Failed to apply {Phase} image for collection {CollectionId} at pointer {Pointer}",
+                phase,
+                collectionId,
+                pointer);
+        }
+    }
+
+    private async Task ApplyInsert(UpdateLogRecord record)
+    {
+        if (_recoveryStorage == null)
+            return;
+
+        if (record.AfterImage.Length == 0)
+            return;
+
+        if (record.PagePointer.Type != Pointer.TypeData || record.PagePointer.Position <= 0)
+            return;
+
+        try
+        {
+            var existing = await _recoveryStorage.SelectAsync(record.PagePointer);
+            if (existing != null)
+            {
+                await ApplyImage(record.PagePointer, record.CollectionId, record.AfterImage, "REDO-INSERT");
+                return;
+            }
+
+            var insertedPointer = await _recoveryStorage.StoreAsync(1, record.CollectionId, 1, record.AfterImage);
+            if (insertedPointer != record.PagePointer)
+            {
+                _logger.Warning(
+                    "REDO insert remapped pointer from {OldPointer} to {NewPointer} for collection {CollectionId}",
+                    record.PagePointer,
+                    insertedPointer,
+                    record.CollectionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(
+                ex,
+                "Failed REDO insert for collection {CollectionId} at pointer {Pointer}",
+                record.CollectionId,
+                record.PagePointer);
+        }
+    }
+
+    private async Task ApplyDelete(UpdateLogRecord record)
+    {
+        if (_recoveryStorage == null)
+            return;
+
+        if (record.PagePointer.Type != Pointer.TypeData || record.PagePointer.Position <= 0)
+            return;
+
+        try
+        {
+            var existing = await _recoveryStorage.SelectAsync(record.PagePointer);
+            if (existing == null)
+                return;
+
+            await _recoveryStorage.DeleteAsync(record.PagePointer);
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(
+                ex,
+                "Failed delete apply for collection {CollectionId} at pointer {Pointer}",
+                record.CollectionId,
+                record.PagePointer);
+        }
+    }
+
+    private async Task ApplyRestore(UpdateLogRecord record)
+    {
+        if (_recoveryStorage == null)
+            return;
+
+        if (record.BeforeImage.Length == 0)
+            return;
+
+        if (record.PagePointer.Type != Pointer.TypeData || record.PagePointer.Position <= 0)
+            return;
+
+        try
+        {
+            var existing = await _recoveryStorage.SelectAsync(record.PagePointer);
+            if (existing != null)
+            {
+                await ApplyImage(record.PagePointer, record.CollectionId, record.BeforeImage, "UNDO-DELETE");
+                return;
+            }
+
+            var restoredPointer = await _recoveryStorage.StoreAsync(1, record.CollectionId, 1, record.BeforeImage);
+            if (restoredPointer != record.PagePointer)
+            {
+                _logger.Warning(
+                    "UNDO delete restore remapped pointer from {OldPointer} to {NewPointer} for collection {CollectionId}",
+                    record.PagePointer,
+                    restoredPointer,
+                    record.CollectionId);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.Warning(
+                ex,
+                "Failed UNDO restore for collection {CollectionId} at pointer {Pointer}",
+                record.CollectionId,
+                record.PagePointer);
+        }
     }
     
     public void Dispose()

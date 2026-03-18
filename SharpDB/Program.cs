@@ -15,7 +15,7 @@ Console.WriteLine("=== SharpDB Demo with Write-Ahead Logging (WAL) ===\n");
 try
 {
     // Initialize database with WAL enabled
-    var dbPath = "test-database";
+    var dbPath = Path.Combine(Path.GetTempPath(), $"sharpdb-demo-{Guid.NewGuid()}");
     var config = new EngineConfig
     {
         EnableWAL = true,
@@ -92,34 +92,27 @@ try
         Console.WriteLine($"  - {person.Name} (ID: {person.Id}, Age: {person.Age})");
     }
 
-    // Demonstrate transactions with WAL
-    Console.WriteLine("\n=== Transaction Demo with WAL ===");
-    
-    // Start a transaction
-    var transaction = await db.BeginTransactionAsync();
-    Console.WriteLine("[OK] Transaction started");
-    
-    try
+    // Demonstrate low-level transaction boundary API.
+    Console.WriteLine("\n=== Transaction Boundary Demo ===");
+
+    var txPointer = await db.Transactions.ExecuteAsync(async tx =>
     {
-        // Add a new person within transaction
-        var newPerson = new Person { Id = 4, Name = "Pham Van D", Age = 28, Email = "d@example.com", CreatedDate = DateTime.Now };
-        await collection.InsertAsync(newPerson);
-        Console.WriteLine($"  [OK] Inserted within transaction: {newPerson.Name}");
-        
-        // Commit the transaction
-        await db.CommitTransactionAsync(transaction);
-        Console.WriteLine("[OK] Transaction committed - changes persisted to WAL");
-    }
-    catch (Exception ex)
-    {
-        Console.WriteLine($"[ERROR] Transaction failed: {ex.Message}");
-        await db.RollbackTransactionAsync(transaction);
-        Console.WriteLine("[OK] Transaction rolled back");
-    }
-    finally
-    {
-        transaction.Dispose();
-    }
+        var txPerson = new Person
+        {
+            Id = 4,
+            Name = "Pham Van D",
+            Age = 28,
+            Email = "d@example.com",
+            CreatedDate = DateTime.Now
+        };
+
+        var pointer = await tx.WriteAsync<Person>(null, txPerson);
+        var txReadBack = await tx.ReadAsync<Person>(pointer);
+        Console.WriteLine($"  [OK] Wrote and read back in transaction: {txReadBack?.Name}");
+        return pointer;
+    });
+
+    Console.WriteLine($"[OK] Transaction boundary committed at pointer: {txPointer}");
 
     // Create a checkpoint
     Console.WriteLine("\n=== Checkpoint Demo ===");
@@ -143,7 +136,8 @@ try
     Console.WriteLine("\n=== Simulating Crash Recovery ===");
     Console.WriteLine("Database will be closed and reopened to simulate recovery...");
     
-    // Close database  
+    // Close database before recovery open to release file handles.
+    db.Dispose();
     Console.WriteLine("Database closed.\n");
     
     // Simulate recovery by reopening the database
@@ -166,6 +160,9 @@ try
     
     var finalCount = await collection2.CountAsync();
     Console.WriteLine($"\nRecords after recovery: {finalCount}");
+
+    if (Directory.Exists(dbPath))
+        Directory.Delete(dbPath, recursive: true);
 }
 catch (Exception ex)
 {
@@ -178,8 +175,11 @@ finally
 }
 
 Console.WriteLine("\n=== Demo completed ===");
-Console.WriteLine("Press any key to exit...");
-Console.ReadKey();
+if (!Console.IsInputRedirected)
+{
+    Console.WriteLine("Press any key to exit...");
+    Console.ReadKey();
+}
 
 // Demo entity class
 public class Person

@@ -21,8 +21,11 @@ public class Transaction(
     
     // Track locks for RepeatableRead - need to hold them until commit
     private readonly HashSet<ResourceId> _heldReadLocks = new();
+    private readonly Stack<Func<Task>> _rollbackActions = new();
+    private readonly Lock _rollbackSync = new();
+    private long _nextInsertLockId;
 
-    public async Task<T?> ReadAsync<T>(Pointer pointer) where T : class
+    public async Task<byte[]?> ReadBytesAsync(Pointer pointer)
     {
         var resourceId = new ResourceId("record", pointer.ToString());
         var txnId = new TransactionId(TransactionId);
@@ -36,18 +39,21 @@ public class Transaction(
                 
             case IsolationLevel.ReadCommitted:
                 // Acquire lock but release immediately after reading
-                await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+                if (!await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Timed out acquiring shared lock for read");
                 break;
                 
             case IsolationLevel.RepeatableRead:
                 // Acquire lock and hold until commit
-                await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+                if (!await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Timed out acquiring shared lock for repeatable read");
                 _heldReadLocks.Add(resourceId);
                 break;
                 
             case IsolationLevel.Serializable:
                 // For now, same as RepeatableRead but with range locks (TODO)
-                await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10));
+                if (!await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Shared, TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("Timed out acquiring shared lock for serializable read");
                 _heldReadLocks.Add(resourceId);
                 break;
         }
@@ -55,11 +61,11 @@ public class Transaction(
         try
         {
             // Read version
-            var version = await versionManager.ReadAsync(pointer, StartTimestamp);
+            var version = await versionManager.ReadAsync(pointer, StartTimestamp, TransactionId);
             if (version == null)
                 return null;
 
-            return serializer.Deserialize<T>(version.Data);
+            return version.Data;
         }
         finally
         {
@@ -71,19 +77,31 @@ public class Transaction(
         }
     }
 
-    public async Task<Pointer> WriteAsync<T>(Pointer? pointer, T data) where T : class
+    public async Task<T?> ReadAsync<T>(Pointer pointer) where T : class
     {
-        var resourceId = new ResourceId("record", pointer?.ToString() ?? "new");
+        var payload = await ReadBytesAsync(pointer);
+        if (payload == null)
+            return null;
+
+        return serializer.Deserialize<T>(payload);
+    }
+
+    public async Task<Pointer> WriteBytesAsync(Pointer? pointer, byte[] data, int? collectionIdHint = null)
+    {
+        var resourceId = pointer.HasValue && !pointer.Value.IsEmpty()
+            ? new ResourceId("record", pointer.Value.ToString())
+            : new ResourceId("record", $"new:{TransactionId}:{Interlocked.Increment(ref _nextInsertLockId)}");
         var txnId = new TransactionId(TransactionId);
 
         // Acquire exclusive lock
-        await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Exclusive, TimeSpan.FromSeconds(10));
+        if (!await lockManager.AcquireLockAsync(resourceId, txnId, LockMode.Exclusive, TimeSpan.FromSeconds(10)))
+            throw new TimeoutException("Timed out acquiring exclusive lock for write");
 
         // Get before image for WAL (if updating existing record)
         byte[] beforeImage = Array.Empty<byte>();
         if (pointer != null && !pointer.Value.IsEmpty())
         {
-            var oldVersion = await versionManager.ReadAsync(pointer.Value, StartTimestamp);
+            var oldVersion = await versionManager.ReadAsync(pointer.Value, StartTimestamp, TransactionId);
             if (oldVersion != null)
             {
                 beforeImage = oldVersion.Data;
@@ -91,17 +109,91 @@ public class Transaction(
         }
 
         // Create new version
-        var afterImage = serializer.Serialize(data);
-        var newPointer = await versionManager.WriteAsync(pointer, afterImage, StartTimestamp, TransactionId);
+        var newPointer = await versionManager.WriteAsync(
+            pointer,
+            data,
+            StartTimestamp,
+            TransactionId,
+            collectionIdHint);
 
         // Log to WAL if available
-        if (walManager != null && pointer != null)
+        if (walManager != null)
         {
-            // For now, use collection ID 0 - in real implementation, this would be passed in
-            walManager.LogUpdate(TransactionId, 0, pointer.Value, beforeImage, afterImage);
+            var targetPointer = pointer ?? newPointer;
+            var collectionId = targetPointer.Chunk;
+            if (pointer == null || pointer.Value.IsEmpty())
+                walManager.LogInsert(TransactionId, collectionId, targetPointer, data);
+            else if (data.Length == 0)
+                walManager.LogDelete(TransactionId, collectionId, targetPointer, beforeImage);
+            else
+                walManager.LogUpdate(TransactionId, collectionId, targetPointer, beforeImage, data);
         }
 
         return newPointer;
+    }
+
+    public async Task<Pointer> WriteAsync<T>(Pointer? pointer, T data) where T : class
+    {
+        var payload = serializer.Serialize(data);
+        return await WriteBytesAsync(pointer, payload);
+    }
+
+    public async Task AcquireRangeReadLockAsync(string resourceType, string startInclusive, string endInclusive)
+    {
+        if (IsolationLevel != IsolationLevel.Serializable)
+            return;
+
+        var txnId = new TransactionId(TransactionId);
+        var start = new ResourceId(resourceType, startInclusive);
+        var end = new ResourceId(resourceType, endInclusive);
+
+        if (!await lockManager.AcquireRangeLockAsync(start, end, txnId, LockMode.Shared, TimeSpan.FromSeconds(10)))
+            throw new TimeoutException(
+                $"Timed out acquiring serializable range lock on {resourceType} [{startInclusive}, {endInclusive}]");
+    }
+
+    public async Task AcquireRangeWriteLockAsync(string resourceType, string startInclusive, string endInclusive)
+    {
+        if (IsolationLevel != IsolationLevel.Serializable)
+            return;
+
+        var txnId = new TransactionId(TransactionId);
+        var start = new ResourceId(resourceType, startInclusive);
+        var end = new ResourceId(resourceType, endInclusive);
+
+        if (!await lockManager.AcquireRangeLockAsync(start, end, txnId, LockMode.Exclusive, TimeSpan.FromSeconds(10)))
+            throw new TimeoutException(
+                $"Timed out acquiring serializable range write lock on {resourceType} [{startInclusive}, {endInclusive}]");
+    }
+
+    public Task RegisterRollbackActionAsync(Func<Task> rollbackAction)
+    {
+        ArgumentNullException.ThrowIfNull(rollbackAction);
+
+        lock (_rollbackSync)
+        {
+            _rollbackActions.Push(rollbackAction);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async Task RunRollbackActionsAsync()
+    {
+        while (true)
+        {
+            Func<Task>? rollbackAction;
+
+            lock (_rollbackSync)
+            {
+                rollbackAction = _rollbackActions.Count > 0 ? _rollbackActions.Pop() : null;
+            }
+
+            if (rollbackAction == null)
+                break;
+
+            await rollbackAction();
+        }
     }
 
     public void Dispose()

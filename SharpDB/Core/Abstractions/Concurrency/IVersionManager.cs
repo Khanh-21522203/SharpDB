@@ -4,8 +4,13 @@ namespace SharpDB.Core.Abstractions.Concurrency;
 
 public interface IVersionManager : IDisposable
 {
-    Task<VersionedRecord?> ReadAsync(Pointer pointer, long readTimestamp);
-    Task<Pointer> WriteAsync(Pointer? pointer, byte[] data, long writeTimestamp, long txnId);
+    Task<VersionedRecord?> ReadAsync(Pointer pointer, long readTimestamp, long? transactionId = null);
+    Task<Pointer> WriteAsync(
+        Pointer? pointer,
+        byte[] data,
+        long writeTimestamp,
+        long txnId,
+        int? collectionIdHint = null);
     Task CommitAsync(long txnId, long commitTimestamp);
     Task AbortAsync(long txnId);
     Task GarbageCollectAsync(long minActiveTimestamp);
@@ -20,4 +25,7 @@ public class VersionedRecord
     public long TransactionId { get; set; }
     public Pointer? PreviousVersion { get; set; }
     public bool IsCommitted { get; set; }
+    public long WriteOrder { get; set; }
+    public long CommitOrder { get; set; }
+    public bool IsDeleted { get; set; }
 }

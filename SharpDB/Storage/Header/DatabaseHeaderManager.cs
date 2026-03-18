@@ -115,10 +115,22 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
         {
             WriteIndented = true
         });
-        
-        // TODO: WriteAllTextAsync is not safe. Consider atomic write to avoid corruption.
-        // Or using WAL
-        await File.WriteAllTextAsync(_headerFile, json);
+
+        var tempFile = $"{_headerFile}.tmp";
+        await File.WriteAllTextAsync(tempFile, json);
+
+        await using (var fs = new FileStream(
+                         tempFile,
+                         FileMode.Open,
+                         FileAccess.ReadWrite,
+                         FileShare.None,
+                         4096,
+                         FileOptions.WriteThrough))
+        {
+            await fs.FlushAsync();
+        }
+
+        File.Move(tempFile, _headerFile, true);
     }
 }
 

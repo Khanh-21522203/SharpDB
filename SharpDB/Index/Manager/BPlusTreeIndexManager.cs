@@ -13,30 +13,29 @@ namespace SharpDB.Index.Manager;
 public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
     where TK : IComparable<TK>
 {
-    private readonly DeleteOperation<TK, TV> _deleteOp;
-    private readonly int _indexId;
-    private readonly InsertOperation<TK, TV> _insertOp;
+    private readonly IBPlusTreeMutationEngine<TK, TV> _mutationEngine;
     private readonly SearchOperation<TK, TV> _searchOp;
     private readonly IIndexIOSession<TK> _session;
-    private readonly IIndexStorageManager _storage;
     private readonly BPlusTreeNodeFactory<TK, TV> _factory;
+    private readonly SemaphoreSlim _gate = new(1, 1);
 
     public BPlusTreeIndexManager(
         IIndexStorageManager storage,
         int indexId,
         int degree)
     {
-        _storage = storage;
-        _indexId = indexId;
-
         var keySerializer = CreateSerializer<TK>();
         var valueSerializer = CreateSerializer<TV>();
         _factory = new BPlusTreeNodeFactory<TK, TV>(keySerializer, valueSerializer, degree);
 
         _session = new BufferedIndexIOSession<TK>(storage, CreateObjectNodeFactory(), indexId);
         _searchOp = new SearchOperation<TK, TV>(_session, storage, indexId);
-        _insertOp = new InsertOperation<TK, TV>(_session, storage, _factory, indexId);
-        _deleteOp = new DeleteOperation<TK, TV>(_session, storage, indexId);
+        _mutationEngine = new BPlusTreeMutationEngine<TK, TV>(
+            new InsertOperation<TK, TV>(_session, storage, _factory, indexId),
+            new DeleteOperation<TK, TV>(_session, storage, indexId),
+            _session,
+            storage,
+            indexId);
     }
 
     // Constructor with explicit serializers (for custom types like BinaryList)
@@ -47,15 +46,16 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         ISerializer<TK> keySerializer,
         ISerializer<TV> valueSerializer)
     {
-        _storage = storage;
-        _indexId = indexId;
-
         _factory = new BPlusTreeNodeFactory<TK, TV>(keySerializer, valueSerializer, degree);
 
         _session = new BufferedIndexIOSession<TK>(storage, CreateObjectNodeFactory(), indexId);
         _searchOp = new SearchOperation<TK, TV>(_session, storage, indexId);
-        _insertOp = new InsertOperation<TK, TV>(_session, storage, _factory, indexId);
-        _deleteOp = new DeleteOperation<TK, TV>(_session, storage, indexId);
+        _mutationEngine = new BPlusTreeMutationEngine<TK, TV>(
+            new InsertOperation<TK, TV>(_session, storage, _factory, indexId),
+            new DeleteOperation<TK, TV>(_session, storage, indexId),
+            _session,
+            storage,
+            indexId);
     }
     
     private INodeFactory<TK, object> CreateObjectNodeFactory()
@@ -65,33 +65,72 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
 
     public async Task<TV?> GetAsync(TK key)
     {
-        return await _searchOp.SearchAsync(key);
+        await _gate.WaitAsync();
+        try
+        {
+            return await _searchOp.SearchAsync(key);
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task PutAsync(TK key, TV value)
     {
-        await _insertOp.InsertAsync(key, value);
+        await _gate.WaitAsync();
+        try
+        {
+            await _mutationEngine.MutateAsync(new MutationRequest<TK, TV>(MutationKind.Upsert, key, value));
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<bool> RemoveAsync(TK key)
     {
-        return await _deleteOp.DeleteAsync(key);
+        await _gate.WaitAsync();
+        try
+        {
+            var result = await _mutationEngine.MutateAsync(new MutationRequest<TK, TV>(MutationKind.Delete, key));
+            return result.Applied;
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public async Task<bool> ContainsKeyAsync(TK key)
     {
         var value = await GetAsync(key);
-        return value != null;
+        if (value == null)
+            return false;
+
+        if (value is Pointer pointer)
+            return pointer.Type == Pointer.TypeData && pointer.Position > 0;
+
+        return true;
     }
 
     public async Task<int> CountAsync()
     {
-        var count = 0;
-        // Scan entire tree from minimum to maximum possible values
-        var minKey = GetMinValue<TK>();
-        var maxKey = GetMaxValue<TK>();
-        await foreach (var _ in _searchOp.RangeSearchAsync(minKey, maxKey)) count++;
-        return count;
+        await _gate.WaitAsync();
+        try
+        {
+            var count = 0;
+            // Scan entire tree from minimum to maximum possible values
+            var minKey = GetMinValue<TK>();
+            var maxKey = GetMaxValue<TK>();
+            await foreach (var _ in _searchOp.RangeSearchAsync(minKey, maxKey)) count++;
+            return count;
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
     
     private T GetMinValue<T>() where T : IComparable<T>
@@ -118,12 +157,21 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
 
     public async Task FlushAsync()
     {
-        await _session.FlushAsync();
+        await _gate.WaitAsync();
+        try
+        {
+            await _mutationEngine.CommitAsync();
+        }
+        finally
+        {
+            _gate.Release();
+        }
     }
 
     public void Dispose()
     {
         _session?.Dispose();
+        _gate.Dispose();
     }
 
     private ISerializer<T> CreateSerializer<T>()

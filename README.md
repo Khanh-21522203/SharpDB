@@ -1,527 +1,197 @@
-# SharpDB - Embedded Database Engine
+# SharpDB
 
-<div align="center">
+SharpDB is an embedded database engine written in C# (.NET 9). It is a learning-oriented project focused on storage engines, indexing, transactions, MVCC, and WAL-based durability.
 
-</div>
+## What Is Implemented
 
----
+- Storage engine
+  - Page-based storage manager
+  - Buffered data I/O sessions
+  - Header/metadata persistence for collections and schema
+- Indexing
+  - B+Tree primary index
+  - Secondary indexes (unique and duplicate)
+  - Public secondary index query APIs (exact match + unique range)
+- Collection API
+  - Schema-based collections
+  - CRUD, scan, count, and range queries
+  - Transaction-aware collection operations
+- Transactions and concurrency
+  - Isolation levels: `ReadUncommitted`, `ReadCommitted`, `RepeatableRead`, `Serializable`
+  - MVCC visibility rules with commit/abort handling
+  - Serializable range locking (coarse collection-range token)
+  - Deadlock detection in lock manager
+- Durability
+  - WAL write path for begin/commit/abort + data changes
+  - Recovery phases (analysis, redo, undo)
+  - Checkpoint support and auto-checkpoint scheduling
+- Relational helpers
+  - Foreign key validation hooks (primary-key references)
+  - Collection-level inner join APIs
 
-## 📋 Table of Contents
+## Current Limits
 
-- [Project Description](#-project-description)
-- [Supported Features](#-supported-features)
-- [Architecture Overview](#-architecture-overview)
-- [Quick Start](#-quick-start)
-- [Code Examples](#-code-examples)
-- [Project Structure](#-project-structure)
-- [Contributing](#-contributing)
+- No SQL parser or query optimizer (API-first engine).
+- No distributed/replicated runtime.
+- Serializable range locking is correctness-first and coarse-grained.
+- Foreign key validation currently supports references to loaded target collections and their primary key field.
 
----
+## Architecture At A Glance
 
-## 🎯 Project Description
+Primary write flow:
 
-**SharpDB** is an educational embedded database engine built from scratch in C#. This project demonstrates the implementation of fundamental database concepts:
+`SharpDB -> CollectionManager -> TransactionBoundary -> Transaction/MVCC -> Index + Data Sessions -> Storage`
 
-- **B+ Tree Indexing**: Implementation of self-balancing tree structure for efficient data access
-- **Page-Based Storage**: Fixed-size page management with file pooling
-- **Collection Management**: Schema-based data organization with primary keys
-- **Serialization**: Support for binary and JSON serialization
-- **Transaction Foundation**: Basic transaction and lock management infrastructure
+Durability flow:
 
-### Project Goals
+`Transaction commit -> WAL append/flush -> MVCC commit -> optional auto-checkpoint`
 
-1. **Educational**: Learn and demonstrate database internals and implementation patterns
-2. **Experimental**: Explore different approaches to database design
-3. **Foundation Building**: Create a base for future database features
-4. **Documentation**: Build understanding through implementation
+Recovery flow:
 
-### Learning Objectives
+`Startup -> WAL analysis -> REDO committed changes -> UNDO unfinished changes`
 
-- **Database Internals**: Understand how databases work under the hood
-- **Data Structures**: Implement B+ Trees and other database structures
-- **Storage Management**: Learn about page-based storage and caching
-- **Concurrency**: Explore transaction management and locking
-- **System Design**: Design modular and extensible database components
+Core modules:
 
----
+- `SharpDB/Engine`: collection orchestration, schema, transactions
+- `SharpDB/Index`: B+Tree managers, node operations, index I/O sessions
+- `SharpDB/Storage`: page/storage managers and buffered sessions
+- `SharpDB/WAL`: log records, replay, checkpoint management
 
-## ✨ Supported Features
+## Build
 
-### ✅ Implemented Features
+Requirements:
 
-- **B+ Tree Indexing**
-    - Self-balancing tree structure
-    - O(log n) search, insert, delete operations
-    - Configurable tree degree
-    - Leaf node and internal node implementation
-    - Primary key indexing
+- .NET SDK 9.0+
 
-- **Storage Layer**
-    - Page-based storage management (4KB default page size)
-    - File handler pooling for efficient I/O
-    - LRU page caching (2000 pages default)
-    - Binary and JSON object serialization
-    - Pointer-based storage references
-
-- **Write-Ahead Logging (WAL)**
-    - ACID transaction support
-    - Crash recovery with 3-phase recovery (Analysis, REDO, UNDO)
-    - Group commit optimization (100ms flush interval)
-    - Automatic checkpointing
-    - Log rotation (10MB default file size)
-
-- **Collection Management**
-    - Schema-based collections
-    - Primary key support (long, int, string)
-    - Field types: Int, Long, String, Bool, Double, DateTime
-    - Basic CRUD operations (Insert, Select, Update, Delete)
-    - Scan and Count operations
-
-
-
-### Storage Features
-
-- ✅ **Page-Based Storage**
-    - Fixed-size pages (configurable, default 4KB)
-    - Page allocation and recycling
-    - LRU cache implementation
-
-- ✅ **Flexible Serialization**
-    - Binary serialization for performance
-    - JSON serialization for flexibility
-    - Primitive type serializers (long, int, string)
-
----
-
-## 🏗️ Architecture Overview
-
-### High-Level Architecture
-
-```mermaid
-graph TB
-    subgraph "Application Layer"
-        APP[Application Code]
-    end
-    
-    subgraph "API Layer"
-        API[SharpDB Main API]
-        CONFIG[EngineConfig]
-    end
-    
-    subgraph "Engine Layer"
-        CM[CollectionManager]
-        SCHEMA[Schema & Field Definition]
-        TXN[TransactionManager - Basic]
-    end
-    
-    subgraph "Operations Layer"
-        OPS[Collection Operations]
-        INSERT[Insert Operation]
-        SELECT[Select Operation]
-        UPDATE[Update Operation]
-        DELETE[Delete Operation]
-    end
-    
-    subgraph "Index Layer"
-        IDX_MGR[BPlusTreeIndexManager]
-        SEARCH_OP[SearchOperation]
-        INSERT_OP[InsertOperation]
-        DELETE_OP[DeleteOperation]
-    end
-    
-    subgraph "B+ Tree Layer"
-        NODES[Node Factory]
-        LEAF[LeafNode]
-        INTERNAL[InternalNode]
-    end
-    
-    subgraph "Serialization Layer"
-        SER_JSON[JsonObjectSerializer]
-        SER_LONG[LongSerializer]
-        SER_INT[IntSerializer]
-        SER_STR[StringSerializer]
-        SER_PTR[PointerSerializer]
-    end
-    
-    subgraph "Storage Layer"
-        DB_STORAGE[DatabaseStorageManager]
-        IDX_STORAGE[IndexStorageManager]
-        DB_HEADER[DatabaseHeaderManager]
-        SESSION_DATA[BufferedDataIOSession]
-        SESSION_IDX[BufferedIndexIOSession]
-    end
-    
-    subgraph "Page Management"
-        PAGE_MGR[PageManager]
-        PAGE_CACHE[LRU Page Cache]
-        FILE_POOL[FileHandlerPool]
-    end
-    
-    subgraph "Data Structures"
-        PTR[Pointer]
-        BITMAP[Bitmap]
-        BINARY_LIST[BinaryList]
-        KV_SIZE[KVSize]
-        CACHE_ID[CacheId]
-    end
-    
-    subgraph "Storage"
-        DISK[(Disk Files)]
-    end
-    
-    subgraph "Concurrency - In Development"
-        LOCK[LockManager]
-        VERSION[VersionManager]
-    end
-    
-    APP --> API
-    API --> CONFIG
-    API --> CM
-    API --> TXN
-    API --> DB_HEADER
-    
-    CM --> SCHEMA
-    CM --> OPS
-    CM --> IDX_MGR
-    CM --> SESSION_DATA
-    
-    OPS --> INSERT
-    OPS --> SELECT
-    OPS --> UPDATE
-    OPS --> DELETE
-    
-    INSERT --> IDX_MGR
-    SELECT --> IDX_MGR
-    UPDATE --> IDX_MGR
-    DELETE --> IDX_MGR
-    
-    IDX_MGR --> SEARCH_OP
-    IDX_MGR --> INSERT_OP
-    IDX_MGR --> DELETE_OP
-    IDX_MGR --> SESSION_IDX
-    
-    SEARCH_OP --> NODES
-    INSERT_OP --> NODES
-    DELETE_OP --> NODES
-    
-    NODES --> LEAF
-    NODES --> INTERNAL
-    
-    LEAF --> SER_LONG
-    LEAF --> SER_INT
-    LEAF --> SER_STR
-    INTERNAL --> SER_PTR
-    
-    SESSION_DATA --> DB_STORAGE
-    SESSION_IDX --> IDX_STORAGE
-    
-    DB_STORAGE --> PAGE_MGR
-    IDX_STORAGE --> FILE_POOL
-    DB_STORAGE --> SER_JSON
-    
-    PAGE_MGR --> PAGE_CACHE
-    PAGE_MGR --> FILE_POOL
-    
-    DB_STORAGE --> PTR
-    SESSION_DATA --> PTR
-    
-    PAGE_CACHE --> CACHE_ID
-    DB_STORAGE --> BITMAP
-    
-    FILE_POOL --> DISK
-    
-    TXN --> LOCK
-    TXN --> VERSION
-    VERSION --> DB_STORAGE
-    
-    style API fill:#e1f5ff,stroke:#333,stroke-width:2px,color:#000000
-    style CM fill:#ffe1f5,stroke:#333,stroke-width:2px,color:#000000
-    style IDX_MGR fill:#f5ffe1,stroke:#333,stroke-width:2px,color:#000000
-    style NODES fill:#fff5e1,stroke:#333,stroke-width:2px,color:#000000
-    style PAGE_MGR fill:#e1ffe1,stroke:#333,stroke-width:2px,color:#000000
-    style DISK fill:#ffe1e1,stroke:#333,stroke-width:2px,color:#000000
-```
-
-### Architecture Description
-
-#### **1. API Layer**
-- **SharpDB**: Main entry point providing database operations
-- **EngineConfig**: Configuration for page size, B+ tree degree, file handles
-
-#### **2. Engine Layer**
-- **CollectionManager**: Manages collections with schema-based organization
-- **Schema & Field**: Define data structure and field types
-- **TransactionManager**: Basic transaction support (in development)
-
-#### **3. Operations Layer**
-- CRUD operations: Insert, Select, Update, Delete
-- Coordinates between collections and indexes
-
-#### **4. Index Layer**
-- **BPlusTreeIndexManager**: Manages B+ Tree indexes
-- **Operations**: Search, Insert, Delete on B+ Tree
-- **Sessions**: Buffered I/O for index operations
-
-#### **5. B+ Tree Layer**
-- **Node Factory**: Creates and manages tree nodes
-- **LeafNode**: Stores actual data with key-value pairs
-- **InternalNode**: Routes to child nodes
-
-#### **6. Serialization Layer**
-- **Object Serializers**: JSON serialization for complex objects
-- **Primitive Serializers**: Binary serialization for long, int, string
-- **PointerSerializer**: Serializes storage pointers
-
-#### **7. Storage Layer**
-- **DatabaseStorageManager**: Manages data record storage
-- **IndexStorageManager**: Manages index node storage
-- **DatabaseHeaderManager**: Manages collection metadata
-- **I/O Sessions**: Buffered read/write operations
-
-#### **8. Page Management**
-- **PageManager**: Allocates and recycles fixed-size pages
-- **LRU Cache**: Caches frequently accessed pages
-- **FileHandlerPool**: Reuses file handles for efficiency
-
-#### **9. Data Structures**
-- **Pointer**: References to storage locations
-- **Bitmap**: Tracks null values
-- **BinaryList**: Dynamic binary data list
-- **LRU Cache**: Implements cache eviction policy
-
-#### **10. Concurrency (In Development)**
-- **LockManager**: Manages locks (partial implementation)
-- **VersionManager**: Handles data versions (basic implementation)
-
-
-
----
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- [.NET 9.0 SDK](https://dotnet.microsoft.com/download/dotnet/9.0)
-
-### Installation
+Build commands:
 
 ```bash
-# Clone the repository
-git clone https://github.com/yourusername/sharpdb.git
-cd SharpDB
-
-# Build the project
-dotnet build
+dotnet build SharpDB.sln -v minimal
 ```
 
-### Basic Usage
+## Run
+
+Run the demo app:
+
+```bash
+dotnet run --project SharpDB/SharpDB.csproj
+```
+
+Run the secondary-index example:
+
+```bash
+dotnet run --project TestSecondaryIndex/TestSecondaryIndex.csproj
+```
+
+## Test
+
+Executable test harness:
+
+```bash
+dotnet run --project SharpDB.Tests/SharpDB.Tests.csproj
+```
+
+## Quick Start
 
 ```csharp
 using SharpDB;
 using SharpDB.Engine;
-using SharpDB.Configuration;
 
-// Initialize database
-var db = new SharpDB("./mydb");
+var db = new SharpDB.SharpDB("./mydb");
 
-// Define schema
 var schema = new Schema
 {
-    Version = 1,
-    Fields = new List<Field>
-    {
+    Fields =
+    [
         new Field { Name = "Id", Type = FieldType.Long, IsPrimaryKey = true },
-        new Field { Name = "Name", Type = FieldType.String },
-        new Field { Name = "Age", Type = FieldType.Integer }
-    }
+        new Field { Name = "Name", Type = FieldType.String, MaxLength = 100 },
+        new Field { Name = "Age", Type = FieldType.Int }
+    ]
 };
 
-// Create collection
-var users = await db.CreateCollectionAsync<User, long>(
-    "Users", 
-    schema, 
-    keyExtractor: u => u.Id);
+var users = await db.CreateCollectionAsync<User, long>("users", schema, u => u.Id);
 
-// Insert data
-await users.InsertAsync(new User 
-{ 
-    Id = 1, 
-    Name = "Alice", 
-    Age = 30 
-});
+await users.InsertAsync(new User { Id = 1, Name = "Alice", Age = 30 });
+var user = await users.SelectAsync(1);
 
-// Query data
-var user = await users.SelectAsync(1L);
-Console.WriteLine($"Found: {user?.Name}, Age: {user?.Age}");
+Console.WriteLine(user?.Name);
 
-// Cleanup
-db.Dispose();
-```
-
----
-
-## 💻 Code Examples
-
-### Example 1: CRUD Operations
-
-```csharp
-// CREATE
-var newUser = new User { Id = 1, Name = "John Doe", Age = 25 };
-await users.InsertAsync(newUser);
-
-// READ
-var user = await users.SelectAsync(1L);
-Console.WriteLine($"User: {user.Name}");
-
-// UPDATE
-user.Age = 26;
-await users.UpdateAsync(user);
-
-// DELETE
-bool deleted = await users.DeleteAsync(1L);
-```
-
-### Example 2: Working with Collections
-
-```csharp
-// Create multiple collections
-var products = await db.CreateCollectionAsync<Product, long>(
-    "Products",
-    productSchema,
-    keyExtractor: p => p.Id);
-
-var orders = await db.CreateCollectionAsync<Order, long>(
-    "Orders",
-    orderSchema,
-    keyExtractor: o => o.Id);
-
-// Retrieve existing collection
-var existingUsers = await db.GetCollectionAsync<User, long>(
-    "Users",
-    keyExtractor: u => u.Id);
-```
-
-### Example 3: Configuration Options
-
-```csharp
-// Custom configuration
-var config = new EngineConfig
+public sealed class User
 {
-    PageSize = 8192,          // 8KB pages for larger records
-    BTreeDegree = 256,        // Higher degree for fewer tree levels
-    MaxFileHandles = 200      // More file handles for concurrent access
-};
-
-var db = new SharpDB("./mydb", config);
-```
-
-### Example 4: Error Handling
-
-```csharp
-try
-{
-    // Try to insert
-    await users.InsertAsync(new User { Id = 1, Name = "Alice" });
-}
-catch (InvalidOperationException ex)
-{
-    Console.WriteLine($"Operation failed: {ex.Message}");
-}
-catch (Exception ex)
-{
-    Console.WriteLine($"Unexpected error: {ex.Message}");
-}
-finally
-{
-    // Ensure cleanup
-    await db.FlushAsync();
+    public long Id { get; set; }
+    public string Name { get; set; } = "";
+    public int Age { get; set; }
 }
 ```
 
----
+## Benchmark
 
+SharpDB includes a CppColDB-style benchmark harness in `SharpDB.Benchmark/`.
 
-### Configuration
+What it provides:
 
-Create an `EngineConfig` to customize behavior:
+- CLI-configurable workload (`--rows`, `--select-batch`, `--write-batch`)
+- Warmup + measured iterations (`--warmup`, `--iters`)
+- Tabular case stats (`avg_ms`, `p50`, `p95`, `min`, `max`, `qps`, `rows_out`)
+- Rollback-based write cases for stable repeated runs
 
-```csharp
-var config = new EngineConfig
-{
-    PageSize = 4096,              // 4KB pages
-    BTreeDegree = 128,            // B+ tree node capacity
-    MaxFileHandles = 100          // File handle pool size
-};
-
-var db = new SharpDB("./mydb", config);
-```
-
----
-
-## 📊 Performance Benchmarks
-
-A comprehensive benchmark suite has been created in `SharpDB.SimpleBenchmark/` to measure database performance.
-
-### Benchmark Operations
-
-- **Insert**: Bulk insert performance with 1,000 records
-- **Select**: Primary key lookup performance
-- **Update**: In-place update operations
-- **Scan**: Sequential iteration through all records
-- **Count**: Collection size query
-- **Delete**: Record deletion performance
-
-### Running Benchmarks
+Run directly:
 
 ```bash
-# Build and run benchmark suite
-dotnet run --project SharpDB.Benchmark/SharpDB.Benchmark.csproj --configuration Release
+dotnet build SharpDB.Benchmark/SharpDB.Benchmark.csproj -c Release
+dotnet run --project SharpDB.Benchmark/SharpDB.Benchmark.csproj --configuration Release -- \
+  --rows 100000 \
+  --warmup 3 \
+  --iters 15 \
+  --select-batch 5000 \
+  --write-batch 1000 \
+  --wal false
 ```
 
-| Operation | Records | Time (ms) | Throughput (ops/sec) |
-|-----------|---------|-----------|-----------------|
-| **INSERT** | 1,000 | 46.76 | **21,388** |
-| **SELECT** | 1,000 | 11.04 | **90,572**|
-| **UPDATE** | 1,000 | 6.52 | **153,480** |
-| **DELETE** | 100 | 12.49 | **8,008** |
----
-
-
-## 🤝 Contributing
-
-Contributions are welcome! This is a learning project, so feel free to experiment and suggest improvements.
-
-### Building from Source
+Use helper script:
 
 ```bash
-# Fork and clone
-git clone https://github.com/yourusername/sharpdb.git
-cd SharpDB
-
-# Create feature branch
-git checkout -b feature/my-feature
-
-# Make changes and test
-dotnet test
-
-# Submit PR
-git push origin feature/my-feature
+./scripts/run_benchmark.sh
 ```
 
----
+Override with environment variables:
 
+```bash
+ROWS=200000 WARMUP=4 ITERS=12 SELECT_BATCH=10000 WRITE_BATCH=2000 ./scripts/run_benchmark.sh
+DB_PATH=/tmp/sharpdb_bench WAL=true ./scripts/run_benchmark.sh
+```
 
-## 🙏 Acknowledgments
+Sample statistics (this machine, `rows=100000 warmup=3 iterations=15 select_batch=5000 write_batch=1000 wal=false`):
 
-- Inspired by database systems: SQLite, LevelDB, and RocksDB
-- B+ Tree algorithms based on academic research
-- Storage design influenced by traditional RDBMS architectures
+| Case | avg_ms | p50 | p95 | min | max | qps | rows_out |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| `read.count` | 8.998 | 8.793 | 10.580 | 7.794 | 10.594 | 111.1 | 100000.0 |
+| `read.pk_lookup_batch` | 17.987 | 17.007 | 26.167 | 13.310 | 36.448 | 55.6 | 5000.0 |
+| `read.range_scan_batch` | 15.158 | 10.143 | 34.740 | 6.801 | 36.534 | 66.0 | 5000.0 |
+| `read.filter_scan` | 201.521 | 196.185 | 246.366 | 188.603 | 246.936 | 5.0 | 60000.0 |
+| `write.insert_rollback` | 33.771 | 31.836 | 46.689 | 26.396 | 62.550 | 29.6 | 1000.0 |
+| `write.update_rollback` | 51.886 | 51.648 | 59.270 | 45.939 | 59.872 | 19.3 | 1000.0 |
+| `write.delete_rollback` | 4.554 | 4.106 | 7.063 | 3.296 | 7.596 | 219.6 | 104.3 |
 
----
+## Repository Layout
 
+```text
+.
+├── SharpDB/                # core engine/runtime
+├── SharpDB.Tests/          # executable regression test harness
+├── SharpDB.Benchmark/      # benchmark harness
+├── TestSecondaryIndex/     # small example project
+├── scripts/                # utility scripts (benchmark runner)
+└── tasks/                  # planning and design notes
+```
 
-<div align="center">
+## Contributing
 
-⭐ Star us on GitHub if you find this project useful!
+Contributions are welcome. Keep changes minimal, test-backed, and aligned with current architecture direction.
 
-</div>
+Typical local validation:
+
+```bash
+dotnet build SharpDB.sln -v minimal
+dotnet run --project SharpDB.Tests/SharpDB.Tests.csproj
+```

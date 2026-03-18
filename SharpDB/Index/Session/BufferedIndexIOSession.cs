@@ -15,65 +15,96 @@ public class BufferedIndexIOSession<TK>(
 {
     private readonly Dictionary<Pointer, TreeNode<TK>> _cache = new();
     private readonly HashSet<TreeNode<TK>> _dirtyNodes = new();
+    private readonly Lock _sync = new();
+    private long _nextTempPointer;
 
     public async Task<TreeNode<TK>> ReadAsync(Pointer pointer)
     {
-        if (_cache.TryGetValue(pointer, out var cached))
-            return cached;
+        lock (_sync)
+        {
+            if (_cache.TryGetValue(pointer, out var cached))
+                return cached;
+        }
 
         var nodeData = await storage.ReadNodeAsync(indexId, pointer);
         var node = nodeFactory.DeserializeNode(nodeData.Bytes);
         node.Pointer = pointer;
 
-        _cache[pointer] = node;
+        lock (_sync)
+        {
+            if (_cache.TryGetValue(pointer, out var existing))
+                return existing;
+
+            _cache[pointer] = node;
+        }
+
         return node;
     }
 
     public Task<Pointer> WriteAsync(TreeNode<TK> node)
     {
-        _dirtyNodes.Add(node);
-        
-        // If this is a new node (no pointer set), create a temporary pointer
-        if (node.Pointer.Position == 0 && node.Pointer.Type == 0)
+        lock (_sync)
         {
-            // Create a temporary pointer with TypeNode and Position = -1 to indicate new node
-            node.Pointer = new Pointer(Pointer.TypeNode, -1, 0);
+            _dirtyNodes.Add(node);
+
+            // If this is a new node (no pointer set), create a unique temporary pointer.
+            if (node.Pointer.Position == 0 && node.Pointer.Type == 0)
+            {
+                var tempPointer = Interlocked.Decrement(ref _nextTempPointer);
+                node.Pointer = new Pointer(Pointer.TypeNode, tempPointer, 0);
+            }
+
+            _cache[node.Pointer] = node;
+            return Task.FromResult(node.Pointer);
         }
-        
-        return Task.FromResult(node.Pointer);
     }
 
     public async Task FlushAsync()
     {
-        foreach (var node in _dirtyNodes)
+        TreeNode<TK>[] dirtyNodes;
+        lock (_sync)
+        {
+            if (_dirtyNodes.Count == 0)
+                return;
+
+            dirtyNodes = [.. _dirtyNodes];
+            _dirtyNodes.Clear();
+        }
+
+        foreach (var node in dirtyNodes)
         {
             var bytes = node.ToBytes();
+            var oldPointer = node.Pointer;
 
-            if (node.Pointer.Position == -1)
+            if (node.Pointer.Position < 0)
             {
                 var result = await storage.WriteNewNodeAsync(indexId, bytes);
                 node.Pointer = result.Pointer;
-                
-                // Update the cache with the new pointer
-                _cache[node.Pointer] = node;
             }
             else
             {
                 await storage.UpdateNodeAsync(indexId, node.Pointer, bytes);
-                
-                // Ensure the cache is updated
+            }
+
+            lock (_sync)
+            {
+                if (oldPointer != node.Pointer)
+                    _cache.Remove(oldPointer);
+
                 _cache[node.Pointer] = node;
             }
 
             node.ClearModified();
         }
-
-        _dirtyNodes.Clear();
     }
 
     public void Dispose()
     {
         FlushAsync().Wait();
-        _cache.Clear();
+        lock (_sync)
+        {
+            _cache.Clear();
+            _dirtyNodes.Clear();
+        }
     }
 }

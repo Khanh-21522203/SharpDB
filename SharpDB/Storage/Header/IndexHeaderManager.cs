@@ -55,24 +55,36 @@ public class IndexHeaderManager : IIndexHeaderManager
         var bytes = File.ReadAllBytes(_headerFilePath);
         var offset = 0;
 
+        if (bytes.Length < sizeof(int))
+            return;
+
         // Read count
         var count = BitConverter.ToInt32(bytes, offset);
         offset += 4;
 
         for (var i = 0; i < count; i++)
         {
+            if (offset + sizeof(int) + sizeof(byte) > bytes.Length)
+                break;
+
             var indexId = BitConverter.ToInt32(bytes, offset);
             offset += 4;
 
             var hasPointer = bytes[offset++] != 0;
             if (hasPointer)
             {
+                if (offset + Pointer.ByteSize > bytes.Length)
+                    break;
+
                 var pointer = Pointer.FromBytes(bytes, offset);
                 _rootPointers[indexId] = pointer;
                 offset += Pointer.ByteSize;
             }
 
             // Read metadata
+            if (offset + MetadataByteSize > bytes.Length)
+                break;
+
             var metadata = DeserializeMetadata(bytes, ref offset);
             _metadata[indexId] = metadata;
         }
@@ -83,18 +95,35 @@ public class IndexHeaderManager : IIndexHeaderManager
         var buffer = new MemoryStream();
         var writer = new BinaryWriter(buffer);
 
-        writer.Write(_rootPointers.Count);
+        var allIndexIds = _rootPointers.Keys
+            .Union(_metadata.Keys)
+            .OrderBy(id => id)
+            .ToList();
 
-        foreach (var kvp in _rootPointers)
+        writer.Write(allIndexIds.Count);
+
+        foreach (var indexId in allIndexIds)
         {
-            writer.Write(kvp.Key);
-            writer.Write(kvp.Value != null ? (byte)1 : (byte)0);
+            writer.Write(indexId);
 
-            if (kvp.Value != null)
-                writer.Write(kvp.Value.Value.ToBytes());
+            var hasPointer = _rootPointers.TryGetValue(indexId, out var pointer) && pointer != null;
+            writer.Write(hasPointer ? (byte)1 : (byte)0);
 
-            if (_metadata.TryGetValue(kvp.Key, out var meta))
-                SerializeMetadata(writer, meta);
+            if (hasPointer)
+                writer.Write(pointer!.Value.ToBytes());
+
+            if (_metadata.TryGetValue(indexId, out var metadata))
+                SerializeMetadata(writer, metadata);
+            else
+                SerializeMetadata(writer, new IndexMetadata
+                {
+                    IndexId = indexId,
+                    Version = 1,
+                    Degree = 0,
+                    TotalNodes = 0,
+                    CreatedAt = DateTime.UtcNow,
+                    ModifiedAt = DateTime.UtcNow
+                });
         }
 
         await File.WriteAllBytesAsync(_headerFilePath, buffer.ToArray());
@@ -102,14 +131,27 @@ public class IndexHeaderManager : IIndexHeaderManager
 
     private IndexMetadata DeserializeMetadata(byte[] bytes, ref int offset)
     {
+        var indexId = BitConverter.ToInt32(bytes, offset);
+        offset += 4;
+        var version = BitConverter.ToInt32(bytes, offset);
+        offset += 4;
+        var degree = BitConverter.ToInt32(bytes, offset);
+        offset += 4;
+        var totalNodes = BitConverter.ToInt64(bytes, offset);
+        offset += 8;
+        var createdAt = new DateTime(BitConverter.ToInt64(bytes, offset));
+        offset += 8;
+        var modifiedAt = new DateTime(BitConverter.ToInt64(bytes, offset));
+        offset += 8;
+
         return new IndexMetadata
         {
-            IndexId = BitConverter.ToInt32(bytes, offset += 4),
-            Version = BitConverter.ToInt32(bytes, offset += 4),
-            Degree = BitConverter.ToInt32(bytes, offset += 4),
-            TotalNodes = BitConverter.ToInt64(bytes, offset += 8),
-            CreatedAt = new DateTime(BitConverter.ToInt64(bytes, offset += 8)),
-            ModifiedAt = new DateTime(BitConverter.ToInt64(bytes, offset += 8))
+            IndexId = indexId,
+            Version = version,
+            Degree = degree,
+            TotalNodes = totalNodes,
+            CreatedAt = createdAt,
+            ModifiedAt = modifiedAt
         };
     }
 
@@ -122,4 +164,12 @@ public class IndexHeaderManager : IIndexHeaderManager
         writer.Write(meta.CreatedAt.Ticks);
         writer.Write(meta.ModifiedAt.Ticks);
     }
+
+    private const int MetadataByteSize =
+        sizeof(int) + // IndexId
+        sizeof(int) + // Version
+        sizeof(int) + // Degree
+        sizeof(long) + // TotalNodes
+        sizeof(long) + // CreatedAt
+        sizeof(long); // ModifiedAt
 }

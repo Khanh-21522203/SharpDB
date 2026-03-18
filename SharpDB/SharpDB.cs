@@ -24,39 +24,26 @@ namespace SharpDB;
 
 public class SharpDB : IDisposable
 {
-    private readonly string _basePath;
     private readonly Dictionary<int, object> _collections = new();
+    private readonly Dictionary<string, object> _collectionsByName = new(StringComparer.Ordinal);
     private readonly EngineConfig _config;
     private readonly IDatabaseHeaderManager _dbHeaderManager;
     private readonly IDatabaseStorageManager _dbStorage;
     private readonly IFileHandlerPool _filePool;
     private readonly IIndexStorageManager _indexStorage;
     private readonly ILogger _logger = Log.ForContext<SharpDB>();
+    private readonly ITransactionBoundary _transactionBoundary;
     private readonly ITransactionManager _transactionManager;
     private readonly WALManager? _walManager;
+    private readonly object _checkpointSync = new();
+    private Task<long>? _activeCheckpointTask;
+    private bool _disposed;
 
     public SharpDB(string basePath, EngineConfig? config = null)
     {
-        _basePath = basePath;
         _config = config ?? EngineConfig.Default;
 
         Directory.CreateDirectory(basePath);
-
-        // Initialize WAL Manager first (if WAL is enabled)
-        if (_config.EnableWAL)
-        {
-            _walManager = new WALManager(basePath, _config.WALMaxFileSize);
-            
-            // Perform recovery from WAL
-            var recoveryTask = _walManager.RecoverAsync();
-            recoveryTask.Wait(); // Synchronously wait for recovery to complete
-            var recoveryResult = recoveryTask.Result;
-            
-            _logger.Information("WAL recovery completed. Committed: {Committed}, Aborted: {Aborted}, Rolled back: {RolledBack}",
-                recoveryResult.CommittedTransactions, 
-                recoveryResult.AbortedTransactions,
-                recoveryResult.UnfinishedTransactions);
-        }
 
         // Initialize components
         _filePool = new FileHandlerPool(_logger, _config);
@@ -65,16 +52,59 @@ public class SharpDB : IDisposable
         _dbStorage = new DiskPageDatabaseStorageManager(pageManager, _logger, _dbHeaderManager, _config);
         _indexStorage = new DiskPageFileIndexStorageManager(basePath, _logger, _filePool);
 
+        // Initialize WAL Manager after storage is available so recovery can apply data changes.
+        if (_config.EnableWAL)
+        {
+            _walManager = new WALManager(basePath, _dbStorage, _config.WALMaxFileSize);
+
+            // Perform recovery from WAL
+            var recoveryTask = _walManager.RecoverAsync();
+            recoveryTask.Wait(); // Synchronously wait for recovery to complete
+            var recoveryResult = recoveryTask.Result;
+
+            _logger.Information("WAL recovery completed. Committed: {Committed}, Aborted: {Aborted}, Rolled back: {RolledBack}",
+                recoveryResult.CommittedTransactions,
+                recoveryResult.AbortedTransactions,
+                recoveryResult.UnfinishedTransactions);
+        }
+
         var lockManager = new LockManager();
         var versionManager = new VersionManager(_dbStorage);
         var serializer = new JsonObjectSerializer();
 
-        _transactionManager = new TransactionManager(lockManager, versionManager, serializer, _walManager);
+        _transactionManager = new TransactionManager(
+            lockManager,
+            versionManager,
+            serializer,
+            _walManager,
+            _config.EnableWAL,
+            _config.WALAutoCheckpoint,
+            _config.WALCheckpointInterval,
+            CreateCheckpointAsync);
+        _transactionBoundary = new TransactionBoundary(_transactionManager);
     }
+
+    public ITransactionBoundary Transactions => _transactionBoundary;
 
     public void Dispose()
     {
-        FlushAsync().Wait();
+        if (_disposed)
+            return;
+
+        _disposed = true;
+
+        try
+        {
+            FlushAsync().Wait();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Best-effort flush during dispose.
+        }
+        catch (AggregateException ex) when (ex.InnerExceptions.All(e => e is ObjectDisposedException))
+        {
+            // Best-effort flush during dispose.
+        }
 
         foreach (var collection in _collections.Values)
             if (collection is IDisposable disposable)
@@ -95,6 +125,22 @@ public class SharpDB : IDisposable
         where TKey : IComparable<TKey>
     {
         var collectionId = await _dbHeaderManager.CreateCollectionAsync(name, schema);
+        return CreateCollectionManager(collectionId, name, schema, keyExtractor);
+    }
+
+    private CollectionManager<T, TKey> CreateCollectionManager<T, TKey>(
+        int collectionId,
+        string collectionName,
+        Schema schema,
+        Func<T, TKey> keyExtractor)
+        where T : class
+        where TKey : IComparable<TKey>
+    {
+        if (_collections.TryGetValue(collectionId, out var existing))
+        {
+            _collectionsByName[collectionName] = existing;
+            return (CollectionManager<T, TKey>)existing;
+        }
 
         // Create primary index with correct TKey type
         var keySerializer = CreateSerializer<TKey>();
@@ -116,15 +162,19 @@ public class SharpDB : IDisposable
 
         var collection = new CollectionManager<T, TKey>(
             collectionId,
+            collectionName,
             schema,
             dataSession,
             _indexStorage,
             primaryIndex,
             indexSession,
-            keyExtractor
+            keyExtractor,
+            ResolveCollectionAsync,
+            _transactionBoundary
         );
 
         _collections[collectionId] = collection;
+        _collectionsByName[collectionName] = collection;
 
         return collection;
     }
@@ -142,10 +192,13 @@ public class SharpDB : IDisposable
             throw new InvalidOperationException($"Collection '{name}' not found");
 
         if (_collections.TryGetValue(collectionInfo.CollectionId, out var existing))
+        {
+            _collectionsByName[collectionInfo.Name] = existing;
             return (CollectionManager<T, TKey>)existing;
+        }
 
         var schema = await _dbHeaderManager.GetSchemaAsync(collectionInfo.CollectionId);
-        return await CreateCollectionAsync<T, TKey>(name, schema!, keyExtractor);
+        return CreateCollectionManager(collectionInfo.CollectionId, collectionInfo.Name, schema!, keyExtractor);
     }
 
     public async Task<ITransaction> BeginTransactionAsync(IsolationLevel level = IsolationLevel.ReadCommitted)
@@ -173,24 +226,36 @@ public class SharpDB : IDisposable
     /// <summary>
     /// Create a checkpoint in WAL
     /// </summary>
-    public async Task<long> CreateCheckpointAsync()
+    public Task<long> CreateCheckpointAsync()
     {
         if (_walManager == null)
         {
             _logger.Warning("WAL is not enabled, cannot create checkpoint");
-            return -1;
+            return Task.FromResult(-1L);
         }
 
+        lock (_checkpointSync)
+        {
+            if (_activeCheckpointTask is { IsCompleted: false })
+                return _activeCheckpointTask;
+
+            _activeCheckpointTask = CreateCheckpointInternalAsync();
+            return _activeCheckpointTask;
+        }
+    }
+
+    private async Task<long> CreateCheckpointInternalAsync()
+    {
         _logger.Information("Creating checkpoint");
-        
+
         // Flush all pending changes
         await FlushAsync();
-        
+
         // Create checkpoint in WAL
-        var checkpointLsn = await _walManager.CreateCheckpointAsync();
-        
+        var checkpointLsn = await _walManager!.CreateCheckpointAsync();
+
         _logger.Information("Checkpoint created at LSN {LSN}", checkpointLsn);
-        
+
         return checkpointLsn;
     }
 
@@ -214,5 +279,14 @@ public class SharpDB : IDisposable
         var factory = new BPlusTreeNodeFactory<TK, Pointer>(keySerializer, valueSerializer, degree);
         // allowCreateInternalNode = false: This is for range query sessions, only deserializes nodes
         return new ObjectNodeFactoryAdapter<TK, Pointer>(factory, allowCreateInternalNode: false);
+    }
+
+    private Task<IForeignKeyLookup?> ResolveCollectionAsync(string collectionName)
+    {
+        if (_collectionsByName.TryGetValue(collectionName, out var collection) &&
+            collection is IForeignKeyLookup fkLookup)
+            return Task.FromResult<IForeignKeyLookup?>(fkLookup);
+
+        return Task.FromResult<IForeignKeyLookup?>(null);
     }
 }
