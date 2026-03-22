@@ -41,4 +41,5 @@ public interface IPageDataWorkspace
     Task<Pointer> ApplyAsync(DataMutation mutation, CancellationToken ct = default);
     Task<DBObject?> ReadAsync(Pointer pointer, ReadVisibility visibility = ReadVisibility.Session, CancellationToken ct = default);
     IAsyncEnumerable<DBObject> ScanAsync(int collectionId, ScanVisibility visibility = ScanVisibility.Committed, CancellationToken ct = default);
+    Task TruncateCollectionAsync(int collectionId);
 }

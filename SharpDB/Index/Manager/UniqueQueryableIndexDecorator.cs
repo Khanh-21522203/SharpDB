@@ -150,6 +150,12 @@ public class UniqueQueryableIndexDecorator<TK, TV>(
         return inner.FlushAsync();
     }
 
+    public async Task ResetAsync()
+    {
+        await inner.ResetAsync();
+        session.Clear();
+    }
+
     public void Dispose()
     {
         inner.Dispose();

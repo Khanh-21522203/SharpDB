@@ -3,6 +3,7 @@ using System.Globalization;
 using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Concurrency;
 using SharpDB.Engine;
+using SharpDB.Serialization;
 using Serilog;
 
 Log.Logger = new LoggerConfiguration()
@@ -39,6 +40,19 @@ try
         // (Non-unique secondary indexes are supported but have a 100-value-per-key cap in BinaryListSerializer.)
         await people.CreateSecondaryIndexAsync<string>("Email", p => p.Email, isUnique: true);
 
+        // Composite index on (Age, Id) — unique because (Age, Id) is unique (Id is primary key).
+        // Must be created before data is populated so it is built incrementally.
+        // isUnique: true enables range queries via the queryable B+Tree path.
+        await people.CreateCompositeIndexAsync(
+            "AgeId",
+            [("Age", FieldType.Int, 4), ("Id", FieldType.Long, 8)],
+            p => [p.Age, p.Id],
+            isUnique: true);
+
+        // Separate auto-increment collection used for the write.auto_increment_batch case.
+        var autoIncrPeople = await db.CreateCollectionAsync<AutoIncrPerson, long>(
+            "auto_incr_people", AutoIncrPersonSchema(), p => p.Id);
+
         await PopulateBaseDataAsync(people, cfg.Rows);
         await db.FlushAsync();
 
@@ -48,6 +62,8 @@ try
         var deleteCursor = 0;
         var ageLookupCursor = 0;
         var commitUpdateCursor = 0;
+        var compositeLookupCursor = 0;
+        var compositeRangeCursor = 0;
         long topNCursor = 1L;
         long nextInsertId = cfg.Rows + 1L;
         // Committed inserts start far above the rollback range to avoid ID conflicts.
@@ -210,6 +226,50 @@ try
                 deleteCursor = (deleteCursor + cfg.WriteBatch) % cfg.Rows;
                 await tx.RollbackAsync();
                 return deleted;
+            }),
+            new("read.aggregate_sum", async () =>
+            {
+                var sum = await people.SumAsync(p => (decimal)p.Score);
+                return (long)sum;
+            }),
+            new("read.aggregate_avg", async () =>
+            {
+                var avg = await people.AverageAsync(p => p.Score);
+                return (long)avg;
+            }),
+            new("read.composite_lookup", async () =>
+            {
+                // Point lookups via composite (Age, Id) index — same batch size as pk_lookup_batch.
+                long hits = 0;
+                for (var i = 0; i < cfg.SelectBatch; i++)
+                {
+                    var id = (long)((compositeLookupCursor + i) % cfg.Rows + 1);
+                    var age = 20 + (int)(id % 50);
+                    var found = await people.SelectByCompositeIndexAsync("AgeId", [age, id]);
+                    if (found != null) hits++;
+                }
+                compositeLookupCursor = (compositeLookupCursor + cfg.SelectBatch) % cfg.Rows;
+                return hits;
+            }),
+            new("read.composite_range", async () =>
+            {
+                // Range over all records with a single Age value — exercises B+Tree range on composite key.
+                long rowsOut = 0;
+                var age = 20 + (compositeRangeCursor % 50);
+                await foreach (var _ in people.RangeByCompositeIndexAsync(
+                    "AgeId",
+                    [age, long.MinValue],
+                    [age, long.MaxValue]))
+                    rowsOut++;
+                compositeRangeCursor = (compositeRangeCursor + 1) % 50;
+                return rowsOut;
+            }),
+            new("write.auto_increment_batch", async () =>
+            {
+                // Inserts without providing an Id — auto-increment fills it in and persists the counter.
+                for (var i = 0; i < cfg.WriteBatch; i++)
+                    await autoIncrPeople.InsertAsync(new AutoIncrPerson { Name = $"auto-{i}" });
+                return cfg.WriteBatch;
             })
         };
 
@@ -240,6 +300,52 @@ try
                 $"{PadLeft(Format(stats.AvgGc0, 2), 10)}" +
                 $"{PadLeft(Format(stats.AvgGc1, 2), 10)}" +
                 $"{PadLeft(Format(stats.AvgGc2, 2), 10)}");
+        }
+
+        // --- Maintenance benchmarks (one-shot — no warmup, single timed run) ---
+        Console.WriteLine();
+        Console.WriteLine(new string('-', 130));
+        Console.WriteLine("Maintenance benchmarks (one-shot)");
+        Console.WriteLine(new string('-', 130));
+
+        // maintenance.vacuum — insert extra rows, delete most, measure vacuum duration.
+        const int vacuumRows = 2000;
+        // Use cfg.Rows * 100 as base to avoid conflicts with other cursors and stay within DateTime range.
+        var vacuumBaseId = (long)cfg.Rows * 100L + 1L;
+        for (var i = 0; i < vacuumRows; i++)
+            await people.InsertAsync(BuildPerson(vacuumBaseId + i));
+        await using (var delTx = await db.Transactions.BeginAsync(IsolationLevel.ReadCommitted))
+        {
+            for (var i = 0; i < vacuumRows - 100; i++)
+                await people.DeleteAsync(vacuumBaseId + i, delTx);
+            await delTx.CommitAsync();
+        }
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await db.VacuumAsync("people");
+            sw.Stop();
+            var countAfter = await people.CountAsync();
+            Console.WriteLine(
+                $"{PadRight("maintenance.vacuum", 28)}{PadLeft(Format(sw.Elapsed.TotalMilliseconds, 1), 10)} ms" +
+                $"   records_after={countAfter}");
+        }
+
+        // maintenance.backup — flush then copy all files to a temp directory.
+        var backupPath = Path.Combine(Path.GetTempPath(), $"sharpdb-bench-backup-{Guid.NewGuid():N}");
+        try
+        {
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            await db.BackupAsync(backupPath);
+            sw.Stop();
+            var backupFiles = Directory.GetFiles(backupPath, "*", SearchOption.AllDirectories).Length;
+            Console.WriteLine(
+                $"{PadRight("maintenance.backup", 28)}{PadLeft(Format(sw.Elapsed.TotalMilliseconds, 1), 10)} ms" +
+                $"   files_copied={backupFiles}");
+        }
+        finally
+        {
+            if (Directory.Exists(backupPath))
+                Directory.Delete(backupPath, recursive: true);
         }
     }
     finally
@@ -451,6 +557,18 @@ static Schema PersonSchema()
     };
 }
 
+static Schema AutoIncrPersonSchema()
+{
+    return new Schema
+    {
+        Fields =
+        [
+            new Field { Name = "Id", Type = FieldType.Long, IsPrimaryKey = true, IsAutoIncrement = true },
+            new Field { Name = "Name", Type = FieldType.String, MaxLength = 120 }
+        ]
+    };
+}
+
 public sealed class BenchmarkPerson
 {
     public long Id { get; set; }
@@ -460,6 +578,12 @@ public sealed class BenchmarkPerson
     public double Score { get; set; }
     public bool IsActive { get; set; }
     public DateTime CreatedDate { get; set; }
+}
+
+public sealed class AutoIncrPerson
+{
+    public long Id { get; set; }
+    public string Name { get; set; } = "";
 }
 
 internal sealed class BenchConfig

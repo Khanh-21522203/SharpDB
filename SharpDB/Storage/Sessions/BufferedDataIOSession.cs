@@ -55,6 +55,11 @@ public class BufferedDataIOSession : IDataIOSession
         await _workspace.ApplyAsync(new DataMutation.Commit());
     }
 
+    public async Task TruncateCollectionAsync(int collectionId)
+    {
+        await _workspace.TruncateCollectionAsync(collectionId);
+    }
+
     public void Dispose()
     {
         FlushAsync().Wait();

@@ -19,6 +19,28 @@ public class CompositeKeySerializer : IObjectSerializer
         _totalSize = keyFields.Sum(f => f.Size);
     }
 
+    public int TotalSize => _totalSize;
+
+    /// <summary>
+    /// Serializes an array of raw field values (not a typed object) into bytes.
+    /// Values must be in the same order as the key fields.
+    /// </summary>
+    public byte[] Serialize(object[] values)
+    {
+        if (values == null)
+            throw new ArgumentNullException(nameof(values));
+
+        var bytes = new byte[_totalSize];
+        var offset = 0;
+        for (var i = 0; i < _keyFields.Count; i++)
+        {
+            var (_, type, size) = _keyFields[i];
+            var value = i < values.Length ? values[i] : null;
+            WriteValue(bytes, ref offset, type, size, value);
+        }
+        return bytes;
+    }
+
     public byte[] Serialize(object obj)
     {
         if (obj == null)

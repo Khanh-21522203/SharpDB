@@ -166,6 +166,17 @@ public class DiskPageFileIndexStorageManager : IIndexStorageManager, IIndexSessi
         await _headerManager.FlushAsync();
     }
 
+    public async Task TruncateIndexAsync(int indexId)
+    {
+        await _headerManager.DeleteIndexAsync(indexId);
+        _nextPositions.TryRemove(indexId, out _);
+        _freePositions.TryRemove(indexId, out _);
+        await _filePool.ReleaseHandleAsync(indexId);
+        var filePath = GetIndexFilePath(indexId);
+        if (File.Exists(filePath))
+            File.Delete(filePath);
+    }
+
     public Task RemoveNodeAsync(int indexId, Pointer pointer)
     {
         // Only track real (positive) disk positions for reuse.

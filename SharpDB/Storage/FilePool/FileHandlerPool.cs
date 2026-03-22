@@ -102,7 +102,7 @@ public class FileHandlerPool : IFileHandlerPool
                     filePath,
                     FileMode.OpenOrCreate,
                     FileAccess.ReadWrite,
-                    FileShare.None,
+                    FileShare.Read,  // Allow concurrent reads (e.g. backup) from outside the pool
                     _config.FileBufferSize,
                     true // Enable async I/O
                 );

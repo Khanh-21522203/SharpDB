@@ -155,6 +155,18 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
         }
     }
 
+    public void Clear()
+    {
+        lock (_sync)
+        {
+            _cache.Clear();
+            _dirtyNodes.Clear();
+            _flushBuffer.Clear();
+            _newNodesBuffer.Clear();
+            _updatedNodesBuffer.Clear();
+        }
+    }
+
     public void Dispose()
     {
         FlushAsync().Wait();

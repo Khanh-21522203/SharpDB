@@ -28,6 +28,7 @@ public class SharpDB : IDisposable
     private readonly Dictionary<int, object> _collections = new();
     private readonly Dictionary<string, object> _collectionsByName = new(StringComparer.Ordinal);
     private readonly EngineConfig _config;
+    private readonly string _basePath;
     private readonly IDatabaseHeaderManager _dbHeaderManager;
     private readonly IDatabaseStorageManager _dbStorage;
     private readonly IFileHandlerPool _filePool;
@@ -43,6 +44,7 @@ public class SharpDB : IDisposable
     public SharpDB(string basePath, EngineConfig? config = null)
     {
         _config = config ?? EngineConfig.Default;
+        _basePath = basePath;
 
         Directory.CreateDirectory(basePath);
 
@@ -198,7 +200,8 @@ public class SharpDB : IDisposable
             partitionCount: partitionCount,
             partitionStrategy: partitionStrategy,
             ResolveCollectionAsync,
-            _transactionBoundary
+            _transactionBoundary,
+            dbHeaderManager: _dbHeaderManager
         );
 
         _collections[collectionId] = collection;
@@ -284,6 +287,45 @@ public class SharpDB : IDisposable
         await _indexStorage.FlushAsync();
         await _filePool.FlushAllAsync();
         _walManager?.Flush();
+    }
+
+    /// <summary>
+    /// Creates a consistent online backup by flushing all pending writes then copying all database files.
+    /// </summary>
+    public async Task BackupAsync(string targetPath)
+    {
+        if (string.IsNullOrWhiteSpace(targetPath))
+            throw new ArgumentException("Target path must not be empty", nameof(targetPath));
+
+        await FlushAsync();
+        if (_walManager != null)
+            await CreateCheckpointAsync();
+
+        Directory.CreateDirectory(targetPath);
+        foreach (var srcFile in Directory.GetFiles(_basePath, "*", SearchOption.AllDirectories))
+        {
+            var rel = Path.GetRelativePath(_basePath, srcFile);
+            var dst = Path.Combine(targetPath, rel);
+            Directory.CreateDirectory(Path.GetDirectoryName(dst)!);
+            // Open with FileShare.ReadWrite so we can read files already open by the file pool.
+            await using var src = new FileStream(srcFile, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            await using var dstFs = new FileStream(dst, FileMode.Create, FileAccess.Write, FileShare.None);
+            await src.CopyToAsync(dstFs);
+        }
+
+        _logger.Information("Backup created at {TargetPath}", targetPath);
+    }
+
+    /// <summary>
+    /// Reclaims disk space from a collection by rewriting it without deleted records.
+    /// The collection must be loaded before calling this method.
+    /// </summary>
+    public async Task VacuumAsync(string collectionName)
+    {
+        if (!_collectionsByName.TryGetValue(collectionName, out var obj) || obj is not IVacuumable vacuumable)
+            throw new InvalidOperationException($"Collection '{collectionName}' not found or not loaded");
+
+        await vacuumable.VacuumAsync();
     }
 
     /// <summary>

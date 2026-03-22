@@ -9,4 +9,5 @@ public interface IDatabaseHeaderManager
     Task<int> CreateCollectionAsync(string name, Schema schema);
     Task DeleteCollectionAsync(int collectionId);
     Task<List<CollectionInfo>> GetCollectionsAsync();
+    Task<long> GetNextSequenceValueAsync(int collectionId, string fieldName);
 }

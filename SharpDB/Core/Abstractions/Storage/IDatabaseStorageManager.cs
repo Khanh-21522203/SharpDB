@@ -37,4 +37,9 @@ public interface IDatabaseStorageManager : IDisposable
     ///     Flush all pending writes.
     /// </summary>
     Task FlushAsync();
+
+    /// <summary>
+    ///     Truncate all data for collection (delete file and reset in-memory state).
+    /// </summary>
+    Task TruncateCollectionAsync(int collectionId);
 }

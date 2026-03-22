@@ -18,6 +18,8 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
     private readonly IIndexIOSession<TK> _session;
     private readonly BPlusTreeNodeFactory<TK, TV> _factory;
     private readonly AsyncReaderWriterLock _gate = new();
+    private readonly IIndexStorageManager _storage;
+    private readonly int _indexId;
 
     public BPlusTreeIndexManager(
         IIndexStorageManager storage,
@@ -28,6 +30,8 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         var valueSerializer = CreateSerializer<TV>();
         _factory = new BPlusTreeNodeFactory<TK, TV>(keySerializer, valueSerializer, degree);
 
+        _storage = storage;
+        _indexId = indexId;
         _session = new BufferedIndexIOSession<TK>(storage, CreateObjectNodeFactory(), indexId);
         _searchOp = new SearchOperation<TK, TV>(_session, storage, indexId);
         _mutationEngine = new BPlusTreeMutationEngine<TK, TV>(
@@ -48,6 +52,8 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
     {
         _factory = new BPlusTreeNodeFactory<TK, TV>(keySerializer, valueSerializer, degree);
 
+        _storage = storage;
+        _indexId = indexId;
         _session = new BufferedIndexIOSession<TK>(storage, CreateObjectNodeFactory(), indexId);
         _searchOp = new SearchOperation<TK, TV>(_session, storage, indexId);
         _mutationEngine = new BPlusTreeMutationEngine<TK, TV>(
@@ -158,6 +164,20 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         try
         {
             await _mutationEngine.CommitAsync();
+        }
+        finally
+        {
+            _gate.ExitWriteLock();
+        }
+    }
+
+    public async Task ResetAsync()
+    {
+        await _gate.EnterWriteLockAsync();
+        try
+        {
+            _session.Clear();
+            await _storage.TruncateIndexAsync(_indexId);
         }
         finally
         {

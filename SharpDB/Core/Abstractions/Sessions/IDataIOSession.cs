@@ -11,4 +11,5 @@ public interface IDataIOSession : IDisposable
     Task DeleteAsync(Pointer pointer);
     IAsyncEnumerable<DBObject> ScanAsync(int collectionId);
     Task FlushAsync();
+    Task TruncateCollectionAsync(int collectionId);
 }

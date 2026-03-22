@@ -96,6 +96,17 @@ public class MemoryDatabaseStorageManager : IDatabaseStorageManager
         return Task.CompletedTask;
     }
 
+    public Task TruncateCollectionAsync(int collectionId)
+    {
+        var keysToRemove = _records
+            .Where(kvp => kvp.Value.CollectionId == collectionId)
+            .Select(kvp => kvp.Key)
+            .ToList();
+        foreach (var key in keysToRemove)
+            _records.TryRemove(key, out _);
+        return Task.CompletedTask;
+    }
+
     public void Dispose()
     {
         _records.Clear();

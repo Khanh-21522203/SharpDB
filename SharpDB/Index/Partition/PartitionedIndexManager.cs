@@ -36,6 +36,9 @@ public class PartitionedIndexManager<TKey>(
     public async Task FlushAsync()
         => await Task.WhenAll(partitions.Select(p => p.FlushAsync()));
 
+    public Task ResetAsync()
+        => Task.WhenAll(partitions.Select(p => p.ResetAsync()));
+
     // --- Range operations: fan out to relevant partitions only, collect, sort by key ---
 
     public async IAsyncEnumerable<KeyValue<TKey, Pointer>> RangeAsync(TKey minKey, TKey maxKey)

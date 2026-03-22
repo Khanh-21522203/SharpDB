@@ -43,7 +43,12 @@ internal static class Program
             ("Partitioned collection secondary index", TestPartitionedCollectionSecondaryIndexAsync),
             ("Partitioned collection scan returns all", TestPartitionedCollectionScanReturnsAllAsync),
             ("Partitioned local secondary index non-unique", TestPartitionedLocalSecondaryIndexNonUniqueAsync),
-            ("Partitioned local secondary index unique", TestPartitionedLocalSecondaryIndexUniqueAsync)
+            ("Partitioned local secondary index unique", TestPartitionedLocalSecondaryIndexUniqueAsync),
+            ("Online backup creates consistent copy", TestOnlineBackupAsync),
+            ("Auto-increment populates sequential IDs", TestAutoIncrementAsync),
+            ("Aggregates sum min max average", TestAggregatesAsync),
+            ("Composite index exact and range queries", TestCompositeIndexAsync),
+            ("Vacuum reclaims space and preserves live records", TestVacuumAsync)
         };
 
         foreach (var test in tests)
@@ -1104,6 +1109,193 @@ internal static class Program
             AllowNull = false
         });
         return schema;
+    }
+
+    // ── New-feature tests ─────────────────────────────────────────────────────
+
+    private static async Task TestOnlineBackupAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-backup-src-{Guid.NewGuid()}");
+        var backupPath = Path.Combine(Path.GetTempPath(), $"sharpdb-backup-dst-{Guid.NewGuid()}");
+        try
+        {
+            using (var db = new SharpDB.SharpDB(basePath))
+            {
+                var col = await db.CreateCollectionAsync<Person, long>("persons", PersonSchema(), p => p.Id);
+                for (var i = 1; i <= 10; i++)
+                    await col.InsertAsync(new Person { Id = i, Name = $"P{i}", Age = i, Email = $"p{i}@x.com", CreatedDate = DateTime.UtcNow });
+
+                await db.BackupAsync(backupPath);
+            }
+
+            // Open the backup and verify it contains the same data
+            using var backupDb = new SharpDB.SharpDB(backupPath);
+            var backupCol = await backupDb.GetCollectionAsync<Person, long>("persons", p => p.Id);
+            var count = await backupCol.CountAsync();
+            Assert(count == 10, $"Backup expected 10 records, got {count}");
+
+            var p5 = await backupCol.SelectAsync(5);
+            Assert(p5 != null && p5.Name.Trim() == "P5", $"Backup record mismatch, got {p5?.Name}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+            if (Directory.Exists(backupPath)) Directory.Delete(backupPath, recursive: true);
+        }
+    }
+
+    private sealed class AutoPerson
+    {
+        public long Id { get; set; }
+        public string Name { get; set; } = string.Empty;
+    }
+
+    private static async Task TestAutoIncrementAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-autoinc-{Guid.NewGuid()}");
+        try
+        {
+            var schema = new Schema
+            {
+                Fields =
+                [
+                    new Field { Name = "Id", Type = FieldType.Long, IsPrimaryKey = true, IsAutoIncrement = true },
+                    new Field { Name = "Name", Type = FieldType.String, MaxLength = 50 }
+                ]
+            };
+
+            using var db = new SharpDB.SharpDB(basePath);
+            var col = await db.CreateCollectionAsync<AutoPerson, long>("autopersons", schema, p => p.Id);
+
+            var a = new AutoPerson { Name = "Alice" };
+            var b = new AutoPerson { Name = "Bob" };
+            var c = new AutoPerson { Name = "Carol" };
+
+            await col.InsertAsync(a);
+            await col.InsertAsync(b);
+            await col.InsertAsync(c);
+
+            Assert(a.Id == 1, $"Expected Id=1, got {a.Id}");
+            Assert(b.Id == 2, $"Expected Id=2, got {b.Id}");
+            Assert(c.Id == 3, $"Expected Id=3, got {c.Id}");
+
+            var fromDb = await col.SelectAsync(2);
+            Assert(fromDb != null && fromDb.Name.Trim() == "Bob", $"Expected Bob at Id=2, got {fromDb?.Name}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestAggregatesAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-agg-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath);
+            var col = await db.CreateCollectionAsync<Person, long>("persons", PersonSchema(), p => p.Id);
+
+            var ages = new[] { 10, 20, 30, 40, 50 };
+            for (var i = 0; i < ages.Length; i++)
+                await col.InsertAsync(new Person { Id = i + 1, Name = $"P{i+1}", Age = ages[i], Email = "", CreatedDate = DateTime.UtcNow });
+
+            var sum = await col.SumAsync(p => (decimal)p.Age);
+            Assert(sum == 150m, $"Sum expected 150, got {sum}");
+
+            var min = await col.MinAsync(p => p.Age);
+            Assert(min == 10, $"Min expected 10, got {min}");
+
+            var max = await col.MaxAsync(p => p.Age);
+            Assert(max == 50, $"Max expected 50, got {max}");
+
+            var avg = await col.AverageAsync(p => (double)p.Age);
+            Assert(Math.Abs(avg - 30.0) < 0.001, $"Average expected 30.0, got {avg}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestCompositeIndexAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-composite-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath);
+            var col = await db.CreateCollectionAsync<Employee, long>("employees", EmployeeSchema(), e => e.Id);
+
+            // Composite index on (DepartmentId:Long:8, Age:Int:4) — must be created before inserts
+            await col.CreateCompositeIndexAsync(
+                "dept_age",
+                [("DepartmentId", FieldType.Long, 8), ("Age", FieldType.Int, 4)],
+                e => [e.DepartmentId, e.Age],
+                isUnique: true);
+
+            // dept 1: ages 10, 20, 30; dept 2: ages 25, 35
+            await col.InsertAsync(new Employee { Id = 1, Name = "A", DepartmentId = 1, Age = 10 });
+            await col.InsertAsync(new Employee { Id = 2, Name = "B", DepartmentId = 1, Age = 20 });
+            await col.InsertAsync(new Employee { Id = 3, Name = "C", DepartmentId = 1, Age = 30 });
+            await col.InsertAsync(new Employee { Id = 4, Name = "D", DepartmentId = 2, Age = 25 });
+            await col.InsertAsync(new Employee { Id = 5, Name = "E", DepartmentId = 2, Age = 35 });
+
+            // Exact lookup: dept=1, age=20 → Employee B
+            var found = await col.SelectByCompositeIndexAsync("dept_age", [(object)1L, 20]);
+            Assert(found != null, "Composite exact lookup returned null");
+            Assert(found!.Name.Trim() == "B", $"Expected B, got {found.Name}");
+
+            // Range query: dept=1, age=15..30 → employees B and C
+            var range = new List<Employee>();
+            await foreach (var e in col.RangeByCompositeIndexAsync("dept_age", [(object)1L, 15], [(object)1L, 30]))
+                range.Add(e);
+            Assert(range.Count == 2, $"Range expected 2, got {range.Count}");
+            Assert(range.Any(e => e.Name.Trim() == "B"), "Expected B in range result");
+            Assert(range.Any(e => e.Name.Trim() == "C"), "Expected C in range result");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestVacuumAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-vacuum-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath);
+            var col = await db.CreateCollectionAsync<Person, long>("persons", PersonSchema(), p => p.Id);
+
+            // Insert 100 records
+            for (var i = 1; i <= 100; i++)
+                await col.InsertAsync(new Person { Id = i, Name = $"Person{i}", Age = i, Email = "", CreatedDate = DateTime.UtcNow });
+
+            // Delete 90 (keep 11..100)
+            for (var i = 1; i <= 90; i++)
+                await col.DeleteAsync(i);
+
+            await db.FlushAsync();
+
+            // Vacuum
+            await db.VacuumAsync("persons");
+
+            // Verify only 10 live records remain
+            var count = await col.CountAsync();
+            Assert(count == 10, $"Expected 10 records after vacuum, got {count}");
+
+            // Spot-check a kept record
+            var p95 = await col.SelectAsync(95);
+            Assert(p95 != null && p95.Name.Trim() == "Person95", $"Expected Person95, got {p95?.Name}");
+
+            // Deleted records should be gone
+            var p1 = await col.SelectAsync(1);
+            Assert(p1 == null, "Expected deleted record to be absent after vacuum");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
     }
 
     // ── Partition tests ──────────────────────────────────────────────────────

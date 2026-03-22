@@ -226,6 +226,16 @@ public class DiskPageDatabaseStorageManager(
         logger.Information("Flushed {Count} active pages", _activePages.Count);
     }
 
+    public async Task TruncateCollectionAsync(int collectionId)
+    {
+        _activePages.TryRemove(collectionId, out _);
+        _currentPagePositions.TryRemove(collectionId, out _);
+        // Clear dirty pages for this collection
+        var dirtyKeys = _dirtyPages.Keys.Where(k => k.CollectionId == collectionId).ToList();
+        foreach (var key in dirtyKeys) _dirtyPages.TryRemove(key, out _);
+        await pageManager.TruncateCollectionAsync(collectionId);
+    }
+
     public void Dispose()
     {
         if (_disposed)

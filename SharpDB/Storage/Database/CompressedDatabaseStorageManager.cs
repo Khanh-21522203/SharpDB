@@ -85,6 +85,11 @@ public class CompressedDatabaseStorageManager(
         return _inner.FlushAsync();
     }
 
+    public Task TruncateCollectionAsync(int collectionId)
+    {
+        return _inner.TruncateCollectionAsync(collectionId);
+    }
+
     public void Dispose()
     {
         _inner.Dispose();

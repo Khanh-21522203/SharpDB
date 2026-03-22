@@ -55,6 +55,11 @@ public interface IIndexStorageManager : IDisposable
     ///     Flush deferred writes (e.g. index headers) to durable storage.
     /// </summary>
     Task FlushAsync();
+
+    /// <summary>
+    ///     Truncate index: delete metadata, close file handle, delete file.
+    /// </summary>
+    Task TruncateIndexAsync(int indexId);
 }
 
 /// <summary>

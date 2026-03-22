@@ -37,4 +37,9 @@ public interface IPageManager
     ///     Breaks circular references and releases resources.
     /// </summary>
     Task DisposeCollectionPagesAsync(int collectionId);
+
+    /// <summary>
+    ///     Truncate collection: close file handle, delete file, reset in-memory state.
+    /// </summary>
+    Task TruncateCollectionAsync(int collectionId);
 }

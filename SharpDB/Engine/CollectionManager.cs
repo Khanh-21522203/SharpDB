@@ -1,3 +1,5 @@
+using System.Reflection;
+using System.Runtime.CompilerServices;
 using SharpDB.Core.Abstractions.Concurrency;
 using SharpDB.Core.Abstractions.Index;
 using SharpDB.Core.Abstractions.Serialization;
@@ -12,6 +14,7 @@ using SharpDB.Index.Partition;
 using SharpDB.Index.Session;
 using SharpDB.Serialization;
 using SharpDB.Storage.Page;
+using Pointer = SharpDB.DataStructures.Pointer;
 
 namespace SharpDB.Engine;
 
@@ -19,7 +22,7 @@ namespace SharpDB.Engine;
 ///     Manages a collection of records with schema and indexes.
 ///     Coordinates CRUD operations, indexes, and relational validation hooks.
 /// </summary>
-public class CollectionManager<T, TKey> : IForeignKeyLookup
+public class CollectionManager<T, TKey> : IForeignKeyLookup, IVacuumable
     where T : class
     where TKey : IComparable<TKey>
 {
@@ -32,8 +35,12 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
     private readonly Func<T, TKey> _keyExtractor;
     private readonly Func<string, Task<IForeignKeyLookup?>>? _collectionResolver;
     private readonly ITransactionBoundary? _transactionBoundary;
+    private readonly IDatabaseHeaderManager? _dbHeaderManager;
     private readonly int _partitionCount;
     private readonly IPartitionStrategy<TKey>? _partitionStrategy;
+    private readonly IReadOnlyList<(PropertyInfo Property, string FieldName)> _autoIncrementFields;
+    private readonly Dictionary<string, CompositeKeyISerializer> _compositeSerializers = new();
+    private readonly Dictionary<string, CompositeKeySerializer> _compositeRawSerializers = new();
 
     private readonly Dictionary<string, ISecondaryIndexWrapper> _secondaryIndexes = new();
     private readonly IObjectSerializer _serializer;
@@ -52,7 +59,8 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         int partitionCount = 1,
         IPartitionStrategy<TKey>? partitionStrategy = null,
         Func<string, Task<IForeignKeyLookup?>>? collectionResolver = null,
-        ITransactionBoundary? transactionBoundary = null)
+        ITransactionBoundary? transactionBoundary = null,
+        IDatabaseHeaderManager? dbHeaderManager = null)
     {
         _collectionId = collectionId;
         _collectionName = collectionName;
@@ -65,7 +73,14 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         _partitionStrategy = partitionStrategy;
         _collectionResolver = collectionResolver;
         _transactionBoundary = transactionBoundary;
+        _dbHeaderManager = dbHeaderManager;
         _serializer = new BinaryObjectSerializer(schema);
+
+        _autoIncrementFields = schema.Fields
+            .Where(f => f.IsAutoIncrement)
+            .Select(f => (typeof(T).GetProperty(f.Name)!, f.Name))
+            .Where(x => x.Item1 != null)
+            .ToList();
 
         _queryStore = new HydratedQueryStore<TKey, T>(
             primaryIndex,
@@ -100,12 +115,15 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
             return;
         }
 
+        await ApplyAutoIncrementAsync(record);
         await ValidateForeignKeysAsync(record);
         await _writeOrchestrator.InsertAsync(record);
     }
 
     public async Task InsertAsync(T record, ITransactionSession transaction)
     {
+        await ApplyAutoIncrementAsync(record);
+
         await transaction.AcquireRangeWriteLockAsync(
             GetPrimaryRangeResourceType(),
             MinRangeKeyToken,
@@ -275,6 +293,47 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
     public async Task<int> CountAsync()
     {
         return await _primaryIndex.CountAsync();
+    }
+
+    // --- Aggregates ---
+
+    public async Task<decimal> SumAsync(Func<T, decimal> selector)
+    {
+        var sum = 0m;
+        await foreach (var r in ScanAsync()) sum += selector(r);
+        return sum;
+    }
+
+    public async Task<TValue?> MinAsync<TValue>(Func<T, TValue> selector) where TValue : IComparable<TValue>
+    {
+        TValue? min = default;
+        var first = true;
+        await foreach (var r in ScanAsync())
+        {
+            var v = selector(r);
+            if (first || v.CompareTo(min!) < 0) { min = v; first = false; }
+        }
+        return min;
+    }
+
+    public async Task<TValue?> MaxAsync<TValue>(Func<T, TValue> selector) where TValue : IComparable<TValue>
+    {
+        TValue? max = default;
+        var first = true;
+        await foreach (var r in ScanAsync())
+        {
+            var v = selector(r);
+            if (first || v.CompareTo(max!) > 0) { max = v; first = false; }
+        }
+        return max;
+    }
+
+    public async Task<double> AverageAsync(Func<T, double> selector)
+    {
+        var sum = 0.0;
+        var count = 0;
+        await foreach (var r in ScanAsync()) { sum += selector(r); count++; }
+        return count == 0 ? 0.0 : sum / count;
     }
 
     public async Task<bool> ExistsByPrimaryKeyAsync(object key)
@@ -447,6 +506,47 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         await _primaryIndex.FlushAsync();
     }
 
+    /// <summary>
+    /// Reclaims disk space by collecting all alive records, truncating storage and indexes,
+    /// then re-inserting everything. This is a blocking maintenance operation.
+    /// </summary>
+    public async Task VacuumAsync()
+    {
+        // 1. Collect all alive records before any truncation.
+        // Cross-check against the primary index to exclude MVCC-deleted records
+        // (transactional deletes remove from the index but don't immediately update raw storage pages).
+        var records = new List<T>();
+        await foreach (var dbObject in _dataSession.ScanAsync(_collectionId))
+        {
+            if (!dbObject.IsAlive) continue;
+            var record = _serializer.Deserialize<T>(dbObject.RawData, dbObject.DataOffset);
+            var key = _keyExtractor(record);
+            var pointer = await _primaryIndex.GetAsync(key);
+            if (IsValidDataPointer(pointer))
+                records.Add(record);
+        }
+
+        // 2. Flush everything pending to disk
+        await _dataSession.FlushAsync();
+        await _primaryIndex.FlushAsync();
+
+        // 3. Truncate data storage (deletes file, clears cache)
+        await _dataSession.TruncateCollectionAsync(_collectionId);
+
+        // 4. Reset primary index (clears in-memory buffer, truncates index file)
+        await _primaryIndex.ResetAsync();
+
+        // 5. Reset all secondary indexes
+        foreach (var wrapper in _secondaryIndexes.Values)
+            await wrapper.ResetAsync();
+
+        // 6. Re-insert all records (rebuilds all indexes automatically).
+        // Use the write orchestrator directly to bypass auto-increment (IDs are already set)
+        // and the transaction boundary (vacuum is a maintenance operation on a stable snapshot).
+        foreach (var record in records)
+            await _writeOrchestrator.InsertAsync(record);
+    }
+
     public async Task CreateSecondaryIndexAsync<TIndexKey>(
         string fieldName,
         Func<T, TIndexKey> indexKeyExtractor,
@@ -499,6 +599,102 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
                 duplicateIndex: index,
                 queryableIndex: null);
         }
+    }
+
+    /// <summary>
+    /// Creates a composite secondary index on multiple fields.
+    /// </summary>
+    public Task CreateCompositeIndexAsync(
+        string indexName,
+        (string FieldName, FieldType FieldType, int Size)[] fields,
+        Func<T, object[]> valuesExtractor,
+        bool isUnique = false)
+    {
+        if (_secondaryIndexes.ContainsKey(indexName))
+            throw new InvalidOperationException($"Index '{indexName}' already exists");
+
+        var keyFields = fields.Select(f => (f.FieldName, f.FieldType, f.Size)).ToList();
+        var rawSerializer = new CompositeKeySerializer(keyFields);
+        var keyISerializer = new CompositeKeyISerializer(rawSerializer);
+        _compositeSerializers[indexName] = keyISerializer;
+        _compositeRawSerializers[indexName] = rawSerializer;
+
+        Func<T, CompositeKey> keyExtractor = record =>
+        {
+            var values = valuesExtractor(record);
+            var bytes = rawSerializer.Serialize(values);
+            return new CompositeKey(bytes);
+        };
+
+        var indexId = _collectionId * 1000 + _secondaryIndexes.Count + 1;
+
+        if (isUnique)
+        {
+            var index = new BPlusTreeIndexManager<CompositeKey, Pointer>(
+                _indexStorage, indexId, 128, keyISerializer, new PointerSerializer());
+            var queryable = CreateQueryableSecondaryIndex(indexId, index, keyISerializer);
+            _secondaryIndexes[indexName] = new SecondaryIndexWrapper<CompositeKey>(
+                keyExtractor, uniqueIndex: index, duplicateIndex: null, queryableIndex: queryable);
+        }
+        else
+        {
+            var index = new DuplicateBPlusTreeIndexManager<CompositeKey, Pointer>(
+                _indexStorage, indexId, 128, keyISerializer, new PointerSerializer());
+            _secondaryIndexes[indexName] = new SecondaryIndexWrapper<CompositeKey>(
+                keyExtractor, uniqueIndex: null, duplicateIndex: index, queryableIndex: null);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Lookup by composite index using exact key values.
+    /// </summary>
+    public async Task<T?> SelectByCompositeIndexAsync(string indexName, object[] keyValues)
+    {
+        if (!_compositeRawSerializers.TryGetValue(indexName, out var rawSerializer))
+            throw new InvalidOperationException($"Composite index '{indexName}' not found");
+
+        var key = new CompositeKey(rawSerializer.Serialize(keyValues));
+        await foreach (var record in SelectManyBySecondaryIndexAsync(indexName, key))
+            return record;
+        return null;
+    }
+
+    /// <summary>
+    /// Range query on a composite index.
+    /// </summary>
+    public IAsyncEnumerable<T> RangeByCompositeIndexAsync(string indexName, object[] minValues, object[] maxValues)
+    {
+        if (!_compositeRawSerializers.TryGetValue(indexName, out var rawSerializer))
+            throw new InvalidOperationException($"Composite index '{indexName}' not found");
+
+        var minKey = new CompositeKey(rawSerializer.Serialize(minValues));
+        var maxKey = new CompositeKey(rawSerializer.Serialize(maxValues));
+        return RangeBySecondaryIndexAsync(indexName, minKey, maxKey);
+    }
+
+    private IUniqueQueryableIndex<TIndexKey, Pointer> CreateQueryableSecondaryIndex<TIndexKey>(
+        int indexId,
+        IUniqueTreeIndexManager<TIndexKey, Pointer> uniqueIndex,
+        ISerializer<TIndexKey> keySerializer)
+        where TIndexKey : IComparable<TIndexKey>
+    {
+        var nodeFactory = new BPlusTreeNodeFactory<TIndexKey, Pointer>(
+            keySerializer,
+            new PointerSerializer(),
+            128);
+
+        var querySession = new BufferedIndexIOSession<TIndexKey>(
+            _indexStorage,
+            new ObjectNodeFactoryAdapter<TIndexKey, Pointer>(nodeFactory, allowCreateInternalNode: false),
+            indexId);
+
+        return new UniqueQueryableIndexDecorator<TIndexKey, Pointer>(
+            uniqueIndex,
+            querySession,
+            _indexStorage,
+            indexId);
     }
 
     private ISecondaryIndexWrapper CreateLocalSecondaryIndex<TIndexKey>(
@@ -564,6 +760,21 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
             querySession,
             _indexStorage,
             indexId);
+    }
+
+    private async Task ApplyAutoIncrementAsync(T record)
+    {
+        if (_autoIncrementFields.Count == 0 || _dbHeaderManager == null)
+            return;
+
+        foreach (var (prop, fieldName) in _autoIncrementFields)
+        {
+            var next = await _dbHeaderManager.GetNextSequenceValueAsync(_collectionId, fieldName);
+            if (prop.PropertyType == typeof(long))
+                prop.SetValue(record, next);
+            else if (prop.PropertyType == typeof(int))
+                prop.SetValue(record, (int)next);
+        }
     }
 
     private async ValueTask UpdateSecondaryIndexesForInsertAsync(T record, Pointer pointer)
@@ -691,6 +902,7 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         Task<IReadOnlyList<Pointer>> LookupPointersAsync(object key);
         IAsyncEnumerable<Pointer> RangePointersAsync(object minKey, object maxKey);
         bool SupportsRange { get; }
+        Task ResetAsync();
     }
 
     private sealed class SecondaryIndexWrapper<TIndexKey>(
@@ -784,6 +996,17 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
                     yield return kv.Value;
         }
 
+        public Task ResetAsync()
+        {
+            if (queryableIndex != null)
+                return queryableIndex.ResetAsync();
+            if (uniqueIndex != null)
+                return uniqueIndex.ResetAsync();
+            if (duplicateIndex != null)
+                return duplicateIndex.ResetAsync();
+            return Task.CompletedTask;
+        }
+
         private static TIndexKey EnsureTypedKey(object key)
         {
             if (key is TIndexKey typed)
@@ -873,6 +1096,17 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
             var batches = await Task.WhenAll(tasks);
             foreach (var kv in batches.SelectMany(b => b).OrderBy(kv => kv.Key))
                 yield return kv.Value;
+        }
+
+        public Task ResetAsync()
+        {
+            if (queryableIndexes != null)
+                return Task.WhenAll(queryableIndexes.Select(i => i.ResetAsync()));
+            if (uniqueIndexes != null)
+                return Task.WhenAll(uniqueIndexes.Select(i => i.ResetAsync()));
+            if (duplicateIndexes != null)
+                return Task.WhenAll(duplicateIndexes.Select(i => i.ResetAsync()));
+            return Task.CompletedTask;
         }
 
         private static async Task<List<KeyValue<TIndexKey, Pointer>>> CollectRangeKvAsync(

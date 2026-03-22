@@ -7,4 +7,5 @@ public interface ITreeIndexManager<TK, TV> : IDisposable
     Task PutAsync(TK key, TV value);
     Task<bool> RemoveAsync(TK key);
     Task FlushAsync();
+    Task ResetAsync();
 }

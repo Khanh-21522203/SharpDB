@@ -186,6 +186,19 @@ public class PageManager : IPageManager
         await _filePool.CloseAsync(collectionId);
     }
 
+    public async Task TruncateCollectionAsync(int collectionId)
+    {
+        // Clear all in-memory state for this collection
+        _activePages.TryRemove(collectionId, out _);
+        _freePages.TryRemove(collectionId, out _);
+        _nextPagePositions.TryRemove(collectionId, out _);
+        // Close file handle then delete the file
+        await _filePool.CloseAsync(collectionId);
+        var filePath = GetFilePath(collectionId);
+        if (File.Exists(filePath))
+            File.Delete(filePath);
+    }
+
     private string GetFilePath(int collectionId)
     {
         return Path.Combine(_basePath, $"data_{collectionId}.db");

@@ -7,4 +7,5 @@ public class CollectionInfo
     public int SchemaVersion { get; set; }
     public long RecordCount { get; set; }
     public DateTime CreatedAt { get; set; }
+    public Dictionary<string, long> SequenceCounters { get; set; } = new();
 }

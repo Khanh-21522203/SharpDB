@@ -73,6 +73,16 @@ public sealed class PageDataWorkspace(IDatabaseStorageManager storage, int pageS
         return storage.ScanAsync(collectionId);
     }
 
+    public async Task TruncateCollectionAsync(int collectionId)
+    {
+        // Clear pending buffered operations for this collection
+        var deleteKeys = _deleteBuffer.Where(p => p.Chunk == collectionId).ToList();
+        foreach (var ptr in deleteKeys) _deleteBuffer.Remove(ptr);
+        var updateKeys = _updateBuffer.Keys.Where(p => p.Chunk == collectionId).ToList();
+        foreach (var ptr in updateKeys) _updateBuffer.Remove(ptr);
+        await storage.TruncateCollectionAsync(collectionId);
+    }
+
     private async Task FlushBufferedChangesAsync(int collectionId)
     {
         if (_updateBuffer.Count > 0)

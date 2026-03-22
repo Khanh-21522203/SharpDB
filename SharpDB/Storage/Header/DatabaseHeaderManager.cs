@@ -62,6 +62,18 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
         await SaveHeader();
     }
 
+    public async Task<long> GetNextSequenceValueAsync(int collectionId, string fieldName)
+    {
+        if (!_collections.TryGetValue(collectionId, out var info))
+            throw new InvalidOperationException($"Collection {collectionId} not found");
+
+        info.SequenceCounters.TryGetValue(fieldName, out var current);
+        var next = current + 1;
+        info.SequenceCounters[fieldName] = next;
+        await SaveHeader();
+        return next;
+    }
+
     public Task<List<CollectionInfo>> GetCollectionsAsync()
     {
         return Task.FromResult(_collections.Values.ToList());
@@ -86,7 +98,8 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
                     Name = col.Name,
                     SchemaVersion = col.Schema.Version,
                     RecordCount = col.RecordCount,
-                    CreatedAt = col.CreatedAt
+                    CreatedAt = col.CreatedAt,
+                    SequenceCounters = col.SequenceCounters ?? new()
                 };
                 _schemas[col.CollectionId] = col.Schema;
             }
@@ -106,7 +119,8 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
                     Name = c.Name,
                     Schema = _schemas[c.CollectionId],
                     RecordCount = c.RecordCount,
-                    CreatedAt = c.CreatedAt
+                    CreatedAt = c.CreatedAt,
+                    SequenceCounters = c.SequenceCounters
                 })
                 .ToList()
         };
@@ -148,4 +162,5 @@ internal class CollectionHeader
     public Schema Schema { get; set; } = new();
     public long RecordCount { get; set; }
     public DateTime CreatedAt { get; set; }
+    public Dictionary<string, long> SequenceCounters { get; set; } = new();
 }

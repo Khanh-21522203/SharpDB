@@ -89,6 +89,8 @@ public class DuplicateBPlusTreeIndexManager<TK, TV> : IDuplicateTreeIndexManager
         return _inner.FlushAsync();
     }
 
+    public Task ResetAsync() => _inner.ResetAsync();
+
     public void Dispose()
     {
         _inner.Dispose();
