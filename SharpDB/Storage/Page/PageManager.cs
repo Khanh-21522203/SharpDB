@@ -99,10 +99,8 @@ public class PageManager : IPageManager
             return emptyPage;
         }
 
-        handle.Seek(pagePosition, SeekOrigin.Begin);
-
         var buffer = new byte[_pageSize];
-        var bytesRead = await handle.ReadAsync(buffer, 0, _pageSize);
+        var bytesRead = await RandomAccess.ReadAsync(handle.SafeFileHandle, buffer, pagePosition);
 
         if (bytesRead < _pageSize)
             throw new InvalidOperationException($"Incomplete page read. Expected {_pageSize}, got {bytesRead} at position {pagePosition}");

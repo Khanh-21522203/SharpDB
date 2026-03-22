@@ -295,6 +295,30 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup, IVacuumable
         return await _primaryIndex.CountAsync();
     }
 
+    // --- Helpers ---
+
+    private static TKey VacuumMinKey()
+    {
+        var type = typeof(TKey);
+        if (type == typeof(long)) return (TKey)(object)long.MinValue;
+        if (type == typeof(int)) return (TKey)(object)int.MinValue;
+        if (type == typeof(string)) return (TKey)(object)string.Empty;
+        if (type == typeof(DateTime)) return (TKey)(object)DateTime.MinValue;
+        if (type == typeof(decimal)) return (TKey)(object)decimal.MinValue;
+        return default!;
+    }
+
+    private static TKey VacuumMaxKey()
+    {
+        var type = typeof(TKey);
+        if (type == typeof(long)) return (TKey)(object)long.MaxValue;
+        if (type == typeof(int)) return (TKey)(object)int.MaxValue;
+        if (type == typeof(string)) return (TKey)(object)new string('\uffff', 255);
+        if (type == typeof(DateTime)) return (TKey)(object)DateTime.MaxValue;
+        if (type == typeof(decimal)) return (TKey)(object)decimal.MaxValue;
+        return default!;
+    }
+
     // --- Aggregates ---
 
     public async Task<decimal> SumAsync(Func<T, decimal> selector)
@@ -512,9 +536,10 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup, IVacuumable
     /// </summary>
     public async Task VacuumAsync()
     {
-        // 1. Collect all alive records before any truncation.
-        // Cross-check against the primary index to exclude MVCC-deleted records
-        // (transactional deletes remove from the index but don't immediately update raw storage pages).
+        // 1. Collect all alive records.
+        // Read from raw storage pages (fast sequential scan) and cross-check each key
+        // against the primary index to exclude MVCC-deleted records (transactional deletes
+        // remove from the index but do not immediately update the raw-storage IsAlive flag).
         var records = new List<T>();
         await foreach (var dbObject in _dataSession.ScanAsync(_collectionId))
         {
@@ -526,7 +551,7 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup, IVacuumable
                 records.Add(record);
         }
 
-        // 2. Flush everything pending to disk
+        // 2. Flush everything pending to disk before destructive truncation.
         await _dataSession.FlushAsync();
         await _primaryIndex.FlushAsync();
 

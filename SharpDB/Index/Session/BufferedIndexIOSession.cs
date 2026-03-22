@@ -12,7 +12,10 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
     private readonly IIndexStorageManager _storage;
     private readonly INodeFactory<TK, object> _nodeFactory;
     private readonly int _indexId;
-    private readonly Dictionary<Pointer, TreeNode<TK>> _cache = new();
+    // Dirty nodes must never be evicted until flushed — kept in an unbounded dict.
+    // Clean read-only nodes use a bounded LRU to cap memory growth on large workloads.
+    private readonly Dictionary<Pointer, TreeNode<TK>> _dirtyCache = new();
+    private readonly LruCache<Pointer, TreeNode<TK>> _readCache;
     private readonly HashSet<TreeNode<TK>> _dirtyNodes = new();
     private readonly Lock _sync = new();
     // Reusable lists for FlushAsync — avoids LINQ ToList() allocations per flush.
@@ -26,11 +29,13 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
     public BufferedIndexIOSession(
         IIndexStorageManager storage,
         INodeFactory<TK, object> nodeFactory,
-        int indexId)
+        int indexId,
+        int readCacheSize = 2000)
     {
         _storage = storage;
         _nodeFactory = nodeFactory;
         _indexId = indexId;
+        _readCache = new LruCache<Pointer, TreeNode<TK>>(readCacheSize);
 
         // Auto-register with the storage manager so transaction-level flush triggers this session.
         if (storage is IIndexSessionFlushRegistry registry)
@@ -41,8 +46,10 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
     {
         lock (_sync)
         {
-            if (_cache.TryGetValue(pointer, out var cached))
-                return cached;
+            if (_dirtyCache.TryGetValue(pointer, out var dirty))
+                return dirty;
+            if (_readCache.TryGet(pointer, out var clean))
+                return clean;
         }
 
         var nodeData = await _storage.ReadNodeAsync(_indexId, pointer);
@@ -51,10 +58,11 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
 
         lock (_sync)
         {
-            if (_cache.TryGetValue(pointer, out var existing))
+            // Re-check dirty cache in case a concurrent write raced ahead.
+            if (_dirtyCache.TryGetValue(pointer, out var existing))
                 return existing;
 
-            _cache[pointer] = node;
+            _readCache.Put(pointer, node);
         }
 
         return node;
@@ -73,7 +81,7 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
                 node.Pointer = new Pointer(Pointer.TypeNode, tempPointer, 0);
             }
 
-            _cache[node.Pointer] = node;
+            _dirtyCache[node.Pointer] = node;
             return Task.FromResult(node.Pointer);
         }
     }
@@ -135,8 +143,9 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
 
             lock (_sync)
             {
-                _cache.Remove(oldPointer);
-                _cache[realPointer] = node;
+                _dirtyCache.Remove(oldPointer);
+                _dirtyCache.Remove(realPointer);
+                _readCache.Put(realPointer, node);
             }
 
             node.ClearModified();
@@ -149,7 +158,10 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
             await _storage.UpdateNodeAsync(_indexId, node.Pointer, bytes);
 
             lock (_sync)
-                _cache[node.Pointer] = node;
+            {
+                _dirtyCache.Remove(node.Pointer);
+                _readCache.Put(node.Pointer, node);
+            }
 
             node.ClearModified();
         }
@@ -159,7 +171,8 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
     {
         lock (_sync)
         {
-            _cache.Clear();
+            _dirtyCache.Clear();
+            _readCache.Clear();
             _dirtyNodes.Clear();
             _flushBuffer.Clear();
             _newNodesBuffer.Clear();
@@ -172,7 +185,8 @@ public class BufferedIndexIOSession<TK> : IIndexIOSession<TK>
         FlushAsync().Wait();
         lock (_sync)
         {
-            _cache.Clear();
+            _dirtyCache.Clear();
+            _readCache.Clear();
             _dirtyNodes.Clear();
             _flushBuffer.Clear();
             _newNodesBuffer.Clear();

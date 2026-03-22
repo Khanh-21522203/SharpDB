@@ -4,6 +4,7 @@ using SharpDB.Configuration;
 using SharpDB.Core.Abstractions.Storage;
 using SharpDB.DataStructures;
 using SharpDB.Storage.Page;
+using PageRecord = SharpDB.Storage.Page.Page;
 
 namespace SharpDB.Storage.Database;
 
@@ -169,18 +170,28 @@ public class DiskPageDatabaseStorageManager(
             await pageManager.WritePageAsync(collectionId, page);
         }
         
-        // Scan all pages from disk
+        // Scan all pages from disk with a prefetch window.
+        // RandomAccess.ReadAsync (used inside LoadPageAsync) is safe for concurrent calls
+        // on the same handle, so outstanding Tasks can execute in parallel at the OS level.
+        const int prefetchAhead = 8;
         var statistics = await pageManager.GetStatisticsAsync(collectionId);
+        var prefetchQueue = new Queue<Task<PageRecord>>(prefetchAhead + 1);
 
-        // Scan all pages on disk
         for (var pageNum = 0; pageNum < statistics.TotalPages; pageNum++)
         {
-            long pagePosition = pageNum * _pageSize;
-            Page.Page page;
+            // Keep the prefetch queue filled.
+            while (prefetchQueue.Count < prefetchAhead)
+            {
+                var nextNum = pageNum + prefetchQueue.Count;
+                if (nextNum >= statistics.TotalPages) break;
+                prefetchQueue.Enqueue(pageManager.LoadPageAsync(collectionId, (long)nextNum * _pageSize));
+            }
+
+            PageRecord page;
 
             try
             {
-                page = await pageManager.LoadPageAsync(collectionId, pagePosition);
+                page = await prefetchQueue.Dequeue();
             }
             catch (Exception ex)
             {

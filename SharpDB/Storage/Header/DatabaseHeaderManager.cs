@@ -12,6 +12,12 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
     private readonly ConcurrentDictionary<int, Schema> _schemas = new();
     private int _nextCollectionId = 1;
 
+    // Block-based sequence allocation: each flush reserves a block of IDs on disk so that
+    // normal inserts never touch disk.  On crash we skip at most (BlockSize-1) IDs but never repeat.
+    private const int SequenceBlockSize = 100;
+    private readonly Dictionary<(int CollectionId, string Field), long> _inMemoryCounters = new();
+    private readonly SemaphoreSlim _sequenceLock = new(1, 1);
+
     public DatabaseHeaderManager(string basePath)
     {
         _headerFile = Path.Combine(basePath, "db_header.json");
@@ -67,10 +73,36 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
         if (!_collections.TryGetValue(collectionId, out var info))
             throw new InvalidOperationException($"Collection {collectionId} not found");
 
-        info.SequenceCounters.TryGetValue(fieldName, out var current);
-        var next = current + 1;
-        info.SequenceCounters[fieldName] = next;
-        await SaveHeader();
+        var key = (collectionId, fieldName);
+
+        await _sequenceLock.WaitAsync();
+        long next;
+        bool needsFlush;
+        try
+        {
+            if (!_inMemoryCounters.TryGetValue(key, out var current))
+            {
+                // First use: initialize from the disk-persisted reservation.
+                info.SequenceCounters.TryGetValue(fieldName, out current);
+            }
+
+            next = current + 1;
+            _inMemoryCounters[key] = next;
+
+            // Flush only when the pre-allocated block is exhausted.
+            info.SequenceCounters.TryGetValue(fieldName, out var diskReserved);
+            needsFlush = next > diskReserved;
+            if (needsFlush)
+                info.SequenceCounters[fieldName] = next + SequenceBlockSize - 1;
+        }
+        finally
+        {
+            _sequenceLock.Release();
+        }
+
+        if (needsFlush)
+            await SaveHeader();
+
         return next;
     }
 
@@ -102,6 +134,12 @@ public class DatabaseHeaderManager : IDatabaseHeaderManager
                     SequenceCounters = col.SequenceCounters ?? new()
                 };
                 _schemas[col.CollectionId] = col.Schema;
+
+                // Seed in-memory counters from the persisted block-end reservation.
+                // On restart we begin from the block end so old IDs are never reused.
+                if (col.SequenceCounters != null)
+                    foreach (var kvp in col.SequenceCounters)
+                        _inMemoryCounters[(col.CollectionId, kvp.Key)] = kvp.Value;
             }
         }
     }

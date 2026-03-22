@@ -28,6 +28,12 @@ SharpDB is an embedded database engine written in C# (.NET 9). It is a learning-
 - Relational helpers
   - Foreign key validation hooks (primary-key references)
   - Collection-level inner join APIs
+- Maintenance and advanced features
+  - **Vacuum** — reclaims space by rebuilding collection and all indexes in-place; MVCC-aware (cross-checks primary index to exclude transactionally deleted records)
+  - **Auto-increment** — schema-level `IsAutoIncrement` field support; sequence counters persisted with block allocation (100 IDs per disk write) to avoid per-insert fsync overhead
+  - **Aggregates** — `SumAsync`, `MinAsync<TValue>`, `MaxAsync<TValue>`, `AverageAsync` over full scans
+  - **Composite indexes** — `CreateCompositeIndexAsync` with multi-field `(Age, Id)` style keys; supports exact match and range queries
+  - **Online backup** — `BackupAsync(path)` flushes all buffers, checkpoints WAL if active, then copies all data files to target directory without locking out reads
 
 ## Current Limits
 
@@ -103,7 +109,7 @@ var schema = new Schema
 {
     Fields =
     [
-        new Field { Name = "Id", Type = FieldType.Long, IsPrimaryKey = true },
+        new Field { Name = "Id", Type = FieldType.Long, IsPrimaryKey = true, IsAutoIncrement = true },
         new Field { Name = "Name", Type = FieldType.String, MaxLength = 100 },
         new Field { Name = "Age", Type = FieldType.Int }
     ]
@@ -111,10 +117,31 @@ var schema = new Schema
 
 var users = await db.CreateCollectionAsync<User, long>("users", schema, u => u.Id);
 
-await users.InsertAsync(new User { Id = 1, Name = "Alice", Age = 30 });
-var user = await users.SelectAsync(1);
+// Secondary index on Name (exact lookup)
+await users.CreateSecondaryIndexAsync<string>("Name", u => u.Name, isUnique: true);
 
-Console.WriteLine(user?.Name);
+// Composite index on (Age, Id) for age-range queries
+await users.CreateCompositeIndexAsync(
+    "AgeId",
+    [("Age", FieldType.Int, 4), ("Id", FieldType.Long, 8)],
+    u => [u.Age, u.Id],
+    isUnique: true);
+
+// Auto-increment fills in Id automatically
+await users.InsertAsync(new User { Name = "Alice", Age = 30 });
+await users.InsertAsync(new User { Name = "Bob",   Age = 25 });
+
+var alice = await users.SelectBySecondaryIndexAsync<string>("Name", "Alice");
+Console.WriteLine(alice?.Id); // 1
+
+// Aggregates
+var avgAge = await users.AverageAsync(u => (double)u.Age); // 27.5
+
+// Vacuum reclaims space after bulk deletes
+await db.VacuumAsync("users");
+
+// Hot backup (no downtime)
+await db.BackupAsync("/backups/mydb");
 
 public sealed class User
 {
@@ -146,11 +173,18 @@ Benchmark cases:
 | `read.top_n` | Ordered B+Tree scan returning first 100 rows |
 | `read.filter_scan` | Full collection scan with predicate filter |
 | `read.secondary_lookup` | Point lookup via unique secondary index (Email) |
+| `read.aggregate_sum` | `SumAsync` over the full collection |
+| `read.aggregate_avg` | `AverageAsync` over the full collection |
+| `read.composite_lookup` | Batch point lookups via composite `(Age, Id)` index |
+| `read.composite_range` | Range scan over a single Age value via composite index |
 | `write.insert_rollback` | Insert batch then rollback (index write cost, no commit) |
 | `write.insert_commit` | Insert batch (committed) + cleanup deletes (committed) |
 | `write.update_rollback` | Update batch then rollback |
 | `write.update_commit` | Update batch then commit |
 | `write.delete_rollback` | Delete batch then rollback |
+| `write.auto_increment_batch` | Batch inserts with auto-increment ID generation |
+| `maintenance.vacuum` | Insert + delete, then full vacuum (one-shot) |
+| `maintenance.backup` | Hot file copy of all DB files (one-shot) |
 
 Run directly:
 
@@ -178,7 +212,7 @@ ROWS=200000 WARMUP=4 ITERS=12 SELECT_BATCH=10000 WRITE_BATCH=2000 ./scripts/run_
 DB_PATH=/tmp/sharpdb_bench WAL=true ./scripts/run_benchmark.sh
 ```
 
-Sample statistics (this machine, `rows=100000 warmup=3 iterations=15 select_batch=5000 write_batch=1000 wal=false`):
+Sample statistics (this machine, `rows=100000 warmup=3 iterations=15 select_batch=5000 write_batch=1000 wal=false`, core read/write cases):
 
 | Case | avg_ms | p50 | p95 | min | max | qps | rows_out | gc0/iter |
 |---|---:|---:|---:|---:|---:|---:|---:|---:|
@@ -210,6 +244,10 @@ Notes on performance:
 - **`StringSerializer.Deserialize` SIMD null-trim** (~50% secondary lookup improvement): `LastIndexOfAnyExcept((byte)0)` span scan replaces `TrimEnd('\0')`, eliminating the second string allocation per B+Tree key comparison.
 - **Zero-copy scan deserialization** (~53% filter_scan improvement): `DBObject.RawData`/`DataOffset` exposes the raw page buffer directly. `CollectionManager.ScanAsync` passes it to `IObjectSerializer.Deserialize<T>(byte[], int offset)`, eliminating the 60K × ~370-byte `new byte[DataSize]` copy that previously occurred per record in every full scan.
 - **Compiled expression-tree deserializer** (~70% filter_scan gc0 reduction): `BinaryObjectSerializer.Deserialize<T>` builds a `Func<byte[], int, T>` per `(Type, Schema)` using `System.Linq.Expressions`. The compiled lambda creates instances via `new T()` (no `Activator` reflection), reads each field at a compile-time-constant offset, and sets properties directly — eliminating boxing of `int`/`long`/`DateTime` fields and `PropertyInfo.SetValue` overhead across all 60K records per scan.
+- **Auto-increment block allocation** (4.3× insert throughput): sequence counters are incremented in memory and flushed to `db_header.json` only every 100 inserts (configurable block size). On crash, at most 99 IDs are skipped — IDs are always monotonically increasing and never repeated.
+- **LRU-bounded index node cache**: `BufferedIndexIOSession` now uses a split cache — an unbounded `Dictionary` for dirty (unflushed) nodes that must never be evicted, and a bounded `LruCache<Pointer, TreeNode>` (default capacity 2000) for clean read nodes. Prevents unbounded memory growth on large workloads with many secondary indexes.
+- **`RandomAccess.ReadAsync` for page I/O**: page reads use `RandomAccess.ReadAsync(handle.SafeFileHandle, buffer, offset)` instead of `Seek + ReadAsync`. This is position-independent and safe for concurrent calls on the same file handle, enabling the prefetch scan queue to issue multiple in-flight reads without a dedicated handle per thread.
+- **8-page prefetch scan**: `DiskPageDatabaseStorageManager.ScanAsync` issues up to 8 concurrent `LoadPageAsync` tasks ahead of the current page being processed. Because `RandomAccess` reads are concurrent-safe, outstanding I/O requests can be serviced in parallel at the OS/SSD level, hiding latency on cache misses during full-table scans.
 - Remaining `gc0/iter` on `read.filter_scan` (2.87) is driven by the 60K Email string allocations (~260 bytes each, ~15.6 MB/iter) — unavoidable since C# strings are heap-allocated.
 
 ## Repository Layout
