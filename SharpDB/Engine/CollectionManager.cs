@@ -8,6 +8,7 @@ using SharpDB.Engine.Queries;
 using SharpDB.Engine.Writes;
 using SharpDB.Index.Manager;
 using SharpDB.Index.Node;
+using SharpDB.Index.Partition;
 using SharpDB.Index.Session;
 using SharpDB.Serialization;
 using SharpDB.Storage.Page;
@@ -27,16 +28,15 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
     private readonly Schema _schema;
     private readonly IDataIOSession _dataSession;
     private readonly IIndexStorageManager _indexStorage;
-    private readonly IUniqueTreeIndexManager<TKey, Pointer> _primaryIndex;
+    private readonly IUniqueQueryableIndex<TKey, Pointer> _primaryIndex;
     private readonly Func<T, TKey> _keyExtractor;
     private readonly Func<string, Task<IForeignKeyLookup?>>? _collectionResolver;
     private readonly ITransactionBoundary? _transactionBoundary;
+    private readonly int _partitionCount;
+    private readonly IPartitionStrategy<TKey>? _partitionStrategy;
 
     private readonly Dictionary<string, ISecondaryIndexWrapper> _secondaryIndexes = new();
     private readonly IObjectSerializer _serializer;
-
-    // Wrap primary index with queryable decorator for range queries
-    private readonly IUniqueQueryableIndex<TKey, Pointer> _queryableIndex;
 
     private readonly IHydratedQueryStore<TKey, T> _queryStore;
     private readonly ICollectionWriteOrchestrator<T, TKey> _writeOrchestrator;
@@ -47,9 +47,10 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         Schema schema,
         IDataIOSession dataSession,
         IIndexStorageManager indexStorage,
-        IUniqueTreeIndexManager<TKey, Pointer> primaryIndex,
-        IIndexIOSession<TKey> indexSession,
+        IUniqueQueryableIndex<TKey, Pointer> primaryIndex,
         Func<T, TKey> keyExtractor,
+        int partitionCount = 1,
+        IPartitionStrategy<TKey>? partitionStrategy = null,
         Func<string, Task<IForeignKeyLookup?>>? collectionResolver = null,
         ITransactionBoundary? transactionBoundary = null)
     {
@@ -60,18 +61,15 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         _indexStorage = indexStorage;
         _primaryIndex = primaryIndex;
         _keyExtractor = keyExtractor;
+        _partitionCount = partitionCount;
+        _partitionStrategy = partitionStrategy;
         _collectionResolver = collectionResolver;
         _transactionBoundary = transactionBoundary;
         _serializer = new BinaryObjectSerializer(schema);
-        _queryableIndex = new UniqueQueryableIndexDecorator<TKey, Pointer>(
-            primaryIndex,
-            indexSession,
-            indexStorage,
-            collectionId);
 
         _queryStore = new HydratedQueryStore<TKey, T>(
             primaryIndex,
-            _queryableIndex,
+            primaryIndex,
             dataSession,
             _serializer);
 
@@ -462,6 +460,12 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         if (_secondaryIndexes.ContainsKey(fieldName))
             throw new InvalidOperationException($"Index on {fieldName} already exists");
 
+        if (_partitionCount > 1 && _partitionStrategy != null)
+        {
+            _secondaryIndexes[fieldName] = CreateLocalSecondaryIndex(indexKeyExtractor, isUnique);
+            return;
+        }
+
         var indexId = _collectionId * 1000 + _secondaryIndexes.Count + 1;
 
         // Create appropriate index type
@@ -494,6 +498,49 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
                 uniqueIndex: null,
                 duplicateIndex: index,
                 queryableIndex: null);
+        }
+    }
+
+    private ISecondaryIndexWrapper CreateLocalSecondaryIndex<TIndexKey>(
+        Func<T, TIndexKey> indexKeyExtractor,
+        bool isUnique)
+        where TIndexKey : IComparable<TIndexKey>
+    {
+        // Base ID for this secondary index's partitions: C*10000 + (S+1)*100 + P
+        var secondarySlot = _secondaryIndexes.Count + 1;
+        var baseId = _collectionId * 10000 + secondarySlot * 100;
+
+        if (isUnique)
+        {
+            var uniqueIndexes = new IUniqueTreeIndexManager<TIndexKey, Pointer>[_partitionCount];
+            var queryableIndexes = new IUniqueQueryableIndex<TIndexKey, Pointer>[_partitionCount];
+
+            for (var p = 0; p < _partitionCount; p++)
+            {
+                var indexId = baseId + p;
+                var index = new BPlusTreeIndexManager<TIndexKey, Pointer>(_indexStorage, indexId, 128);
+                uniqueIndexes[p] = index;
+                queryableIndexes[p] = CreateQueryableSecondaryIndex(indexId, index);
+            }
+
+            return new LocalPartitionedSecondaryIndexWrapper<TIndexKey>(
+                _keyExtractor, indexKeyExtractor, _partitionStrategy!, _partitionCount,
+                uniqueIndexes: uniqueIndexes, duplicateIndexes: null, queryableIndexes: queryableIndexes);
+        }
+        else
+        {
+            var duplicateIndexes = new IDuplicateTreeIndexManager<TIndexKey, Pointer>[_partitionCount];
+
+            for (var p = 0; p < _partitionCount; p++)
+            {
+                var indexId = baseId + p;
+                duplicateIndexes[p] = new DuplicateBPlusTreeIndexManager<TIndexKey, Pointer>(
+                    _indexStorage, indexId, 128, CreateSerializer<TIndexKey>(), new PointerSerializer());
+            }
+
+            return new LocalPartitionedSecondaryIndexWrapper<TIndexKey>(
+                _keyExtractor, indexKeyExtractor, _partitionStrategy!, _partitionCount,
+                uniqueIndexes: null, duplicateIndexes: duplicateIndexes, queryableIndexes: null);
         }
     }
 
@@ -750,5 +797,105 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup
         {
             return pointer.Type == Pointer.TypeData && pointer.Position > 0;
         }
+    }
+
+    private sealed class LocalPartitionedSecondaryIndexWrapper<TIndexKey>(
+        Func<T, TKey> primaryKeyExtractor,
+        Func<T, TIndexKey> indexKeyExtractor,
+        IPartitionStrategy<TKey> strategy,
+        int partitionCount,
+        IUniqueTreeIndexManager<TIndexKey, Pointer>[]? uniqueIndexes,
+        IDuplicateTreeIndexManager<TIndexKey, Pointer>[]? duplicateIndexes,
+        IUniqueQueryableIndex<TIndexKey, Pointer>[]? queryableIndexes)
+        : ISecondaryIndexWrapper
+        where TIndexKey : IComparable<TIndexKey>
+    {
+        public bool SupportsRange => queryableIndexes != null;
+
+        public async Task UpdateAsync(T record, Pointer pointer)
+        {
+            var p = GetPartition(record);
+            var indexKey = indexKeyExtractor(record);
+
+            if (uniqueIndexes != null)
+                await uniqueIndexes[p].PutAsync(indexKey, pointer);
+            else if (duplicateIndexes != null)
+                await duplicateIndexes[p].PutAsync(indexKey, pointer);
+        }
+
+        public async Task DeleteAsync(T record)
+        {
+            var p = GetPartition(record);
+            var indexKey = indexKeyExtractor(record);
+
+            if (uniqueIndexes != null)
+                await uniqueIndexes[p].RemoveAsync(indexKey);
+            else if (duplicateIndexes != null)
+                await duplicateIndexes[p].RemoveAsync(indexKey);
+        }
+
+        public async Task<IReadOnlyList<Pointer>> LookupPointersAsync(object key)
+        {
+            var typedKey = EnsureTypedKey(key);
+
+            if (uniqueIndexes != null)
+            {
+                var tasks = uniqueIndexes.Select(idx => idx.GetAsync(typedKey)).ToArray();
+                var results = await Task.WhenAll(tasks);
+                return results.Where(IsValidDataPointer).ToList();
+            }
+
+            if (duplicateIndexes != null)
+            {
+                var tasks = duplicateIndexes.Select(idx => idx.GetAllAsync(typedKey)).ToArray();
+                var batches = await Task.WhenAll(tasks);
+                return batches.SelectMany(b => b).Where(IsValidDataPointer).ToList();
+            }
+
+            return [];
+        }
+
+        public IAsyncEnumerable<Pointer> RangePointersAsync(object minKey, object maxKey)
+        {
+            if (queryableIndexes == null)
+                throw new NotSupportedException("Range query is only supported for unique secondary indexes");
+
+            var typedMin = EnsureTypedKey(minKey);
+            var typedMax = EnsureTypedKey(maxKey);
+            return RangePointersCoreAsync(typedMin, typedMax);
+        }
+
+        private async IAsyncEnumerable<Pointer> RangePointersCoreAsync(TIndexKey minKey, TIndexKey maxKey)
+        {
+            var tasks = queryableIndexes!
+                .Select(idx => CollectRangeKvAsync(idx, minKey, maxKey))
+                .ToArray();
+            var batches = await Task.WhenAll(tasks);
+            foreach (var kv in batches.SelectMany(b => b).OrderBy(kv => kv.Key))
+                yield return kv.Value;
+        }
+
+        private static async Task<List<KeyValue<TIndexKey, Pointer>>> CollectRangeKvAsync(
+            IUniqueQueryableIndex<TIndexKey, Pointer> idx, TIndexKey min, TIndexKey max)
+        {
+            var results = new List<KeyValue<TIndexKey, Pointer>>();
+            await foreach (var kv in idx.RangeAsync(min, max))
+                if (IsValidDataPointer(kv.Value))
+                    results.Add(kv);
+            return results;
+        }
+
+        private int GetPartition(T record) =>
+            strategy.GetPartition(primaryKeyExtractor(record), partitionCount);
+
+        private static TIndexKey EnsureTypedKey(object key)
+        {
+            if (key is TIndexKey typed) return typed;
+            throw new InvalidOperationException(
+                $"Secondary index key type mismatch. Expected {typeof(TIndexKey).Name}, got {key.GetType().Name}");
+        }
+
+        private static bool IsValidDataPointer(Pointer pointer) =>
+            pointer.Type == Pointer.TypeData && pointer.Position > 0;
     }
 }

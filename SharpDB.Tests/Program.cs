@@ -37,7 +37,13 @@ internal static class Program
             ("WAL reopen loop stress", TestWalReopenLoopStressAsync),
             ("WAL auto-checkpoint interval", TestWalAutoCheckpointIntervalAsync),
             ("WAL auto-checkpoint requires WAL enabled", TestWalAutoCheckpointRequiresWalEnabledAsync),
-            ("WAL auto-checkpoint failure does not break commit", TestWalAutoCheckpointFailureDoesNotBreakCommitAsync)
+            ("WAL auto-checkpoint failure does not break commit", TestWalAutoCheckpointFailureDoesNotBreakCommitAsync),
+            ("Partitioned collection point lookups", TestPartitionedCollectionPointLookupsAsync),
+            ("Partitioned collection range query sorted", TestPartitionedCollectionRangeQuerySortedAsync),
+            ("Partitioned collection secondary index", TestPartitionedCollectionSecondaryIndexAsync),
+            ("Partitioned collection scan returns all", TestPartitionedCollectionScanReturnsAllAsync),
+            ("Partitioned local secondary index non-unique", TestPartitionedLocalSecondaryIndexNonUniqueAsync),
+            ("Partitioned local secondary index unique", TestPartitionedLocalSecondaryIndexUniqueAsync)
         };
 
         foreach (var test in tests)
@@ -1098,5 +1104,189 @@ internal static class Program
             AllowNull = false
         });
         return schema;
+    }
+
+    // ── Partition tests ──────────────────────────────────────────────────────
+
+    private static async Task TestPartitionedCollectionPointLookupsAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-partition-point-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath);
+            var collection = await db.CreateCollectionAsync<Person, long>(
+                "persons", PersonSchema(), p => p.Id, partitionCount: 4);
+
+            for (var i = 1; i <= 100; i++)
+                await collection.InsertAsync(new Person { Id = i, Name = $"Person{i}", Age = i, Email = $"p{i}@x.com", CreatedDate = DateTime.UtcNow });
+
+            for (var i = 1; i <= 100; i++)
+            {
+                var record = await collection.SelectAsync(i);
+                Assert(record != null, $"Record {i} not found");
+                Assert(record!.Id == i, $"Expected Id={i}, got {record.Id}");
+            }
+
+            var count = await collection.CountAsync();
+            Assert(count == 100, $"Expected count=100, got {count}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestPartitionedCollectionRangeQuerySortedAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-partition-range-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath);
+            var collection = await db.CreateCollectionAsync<Person, long>(
+                "persons", PersonSchema(), p => p.Id, partitionCount: 4);
+
+            for (var i = 1; i <= 200; i++)
+                await collection.InsertAsync(new Person { Id = i, Name = $"Person{i}", Age = i, Email = $"p{i}@x.com", CreatedDate = DateTime.UtcNow });
+
+            var results = new List<Person>();
+            await foreach (var r in collection.RangeQueryAsync(50L, 100L))
+                results.Add(r);
+
+            Assert(results.Count == 51, $"Expected 51 results in range [50,100], got {results.Count}");
+
+            // Verify sorted order
+            for (var i = 0; i < results.Count - 1; i++)
+                Assert(results[i].Id < results[i + 1].Id, $"Range results not sorted: {results[i].Id} >= {results[i + 1].Id}");
+
+            Assert(results.First().Id == 50, $"Expected first Id=50, got {results.First().Id}");
+            Assert(results.Last().Id == 100, $"Expected last Id=100, got {results.Last().Id}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestPartitionedLocalSecondaryIndexNonUniqueAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-partition-local-nonunique-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath, new EngineConfig { EnableWAL = true });
+            var employees = await db.CreateCollectionAsync<Employee, long>(
+                "employees", EmployeeSchema(), e => e.Id, partitionCount: 4);
+            await employees.CreateSecondaryIndexAsync<int>("Age", e => e.Age, isUnique: false);
+
+            // Insert employees with Age=30 — IDs 1,2,4 hash to different partitions
+            await employees.InsertAsync(new Employee { Id = 1,  Name = "Alice", DepartmentId = 10, Age = 30, Badge = 1 });
+            await employees.InsertAsync(new Employee { Id = 2,  Name = "Bob",   DepartmentId = 10, Age = 30, Badge = 2 });
+            await employees.InsertAsync(new Employee { Id = 3,  Name = "Cara",  DepartmentId = 20, Age = 25, Badge = 3 });
+            await employees.InsertAsync(new Employee { Id = 4,  Name = "Dan",   DepartmentId = 20, Age = 30, Badge = 4 });
+            await employees.InsertAsync(new Employee { Id = 5,  Name = "Eve",   DepartmentId = 30, Age = 25, Badge = 5 });
+            await employees.InsertAsync(new Employee { Id = 9,  Name = "Frank", DepartmentId = 30, Age = 30, Badge = 9 });
+            await employees.InsertAsync(new Employee { Id = 13, Name = "Grace", DepartmentId = 30, Age = 30, Badge = 13 });
+
+            var age30 = new List<Employee>();
+            await foreach (var e in employees.SelectManyBySecondaryIndexAsync<int>("Age", 30))
+                age30.Add(e);
+
+            Assert(age30.Count == 5, $"Expected 5 employees with Age=30 across partitions, got {age30.Count}");
+            Assert(age30.All(e => e.Age == 30), "Not all results have Age=30");
+
+            var age25 = new List<Employee>();
+            await foreach (var e in employees.SelectManyBySecondaryIndexAsync<int>("Age", 25))
+                age25.Add(e);
+            Assert(age25.Count == 2, $"Expected 2 employees with Age=25, got {age25.Count}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestPartitionedLocalSecondaryIndexUniqueAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-partition-local-unique-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath, new EngineConfig { EnableWAL = true });
+            var employees = await db.CreateCollectionAsync<Employee, long>(
+                "employees", EmployeeSchema(), e => e.Id, partitionCount: 4);
+            await employees.CreateSecondaryIndexAsync<int>("Badge", e => e.Badge, isUnique: true);
+
+            await employees.InsertAsync(new Employee { Id = 1, Name = "Alice", DepartmentId = 10, Age = 30, Badge = 100 });
+            await employees.InsertAsync(new Employee { Id = 2, Name = "Bob",   DepartmentId = 10, Age = 30, Badge = 200 });
+            await employees.InsertAsync(new Employee { Id = 5, Name = "Eve",   DepartmentId = 20, Age = 25, Badge = 300 });
+
+            // Each record is in a different partition (1%4=1, 2%4=2, 5%4=1)
+            // Badge lookup must fan out to all partitions
+            var hit = await employees.SelectBySecondaryIndexAsync<int>("Badge", 200);
+            Assert(hit != null, "Badge=200 lookup returned null");
+            Assert(hit!.Name.Trim() == "Bob", $"Expected Bob for Badge=200, got {hit.Name}");
+
+            var miss = await employees.SelectBySecondaryIndexAsync<int>("Badge", 999);
+            Assert(miss == null, "Badge=999 should return null");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestPartitionedCollectionSecondaryIndexAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-partition-secondary-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath, new EngineConfig { EnableWAL = true });
+            var employees = await db.CreateCollectionAsync<Employee, long>(
+                "employees", EmployeeSchema(), e => e.Id, partitionCount: 4);
+            await employees.CreateSecondaryIndexAsync<int>("Age", e => e.Age, isUnique: false);
+
+            // Insert employees with Age=30 distributed across partitions (IDs 1,2,4,7,10 → different partitions)
+            await employees.InsertAsync(new Employee { Id = 1, Name = "Alice", DepartmentId = 10, Age = 30, Badge = 1 });
+            await employees.InsertAsync(new Employee { Id = 2, Name = "Bob",   DepartmentId = 10, Age = 30, Badge = 2 });
+            await employees.InsertAsync(new Employee { Id = 3, Name = "Cara",  DepartmentId = 20, Age = 25, Badge = 3 });
+            await employees.InsertAsync(new Employee { Id = 4, Name = "Dan",   DepartmentId = 20, Age = 30, Badge = 4 });
+            await employees.InsertAsync(new Employee { Id = 5, Name = "Eve",   DepartmentId = 30, Age = 25, Badge = 5 });
+
+            var age30 = new List<Employee>();
+            await foreach (var e in employees.SelectManyBySecondaryIndexAsync<int>("Age", 30))
+                age30.Add(e);
+
+            Assert(age30.Count == 3, $"Expected 3 employees with Age=30, got {age30.Count}");
+            Assert(age30.All(e => e.Age == 30), "Not all secondary index results have Age=30");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
+    }
+
+    private static async Task TestPartitionedCollectionScanReturnsAllAsync()
+    {
+        var basePath = Path.Combine(Path.GetTempPath(), $"sharpdb-partition-scan-{Guid.NewGuid()}");
+        try
+        {
+            using var db = new SharpDB.SharpDB(basePath);
+            var collection = await db.CreateCollectionAsync<Person, long>(
+                "persons", PersonSchema(), p => p.Id, partitionCount: 4);
+
+            for (var i = 1; i <= 100; i++)
+                await collection.InsertAsync(new Person { Id = i, Name = $"Person{i}", Age = i, Email = $"p{i}@x.com", CreatedDate = DateTime.UtcNow });
+
+            var scanned = new List<Person>();
+            await foreach (var r in collection.ScanAsync())
+                scanned.Add(r);
+
+            Assert(scanned.Count == 100, $"ScanAsync expected 100 records, got {scanned.Count}");
+            var ids = scanned.Select(r => r.Id).ToHashSet();
+            for (var i = 1; i <= 100; i++)
+                Assert(ids.Contains(i), $"ScanAsync missing record Id={i}");
+        }
+        finally
+        {
+            if (Directory.Exists(basePath)) Directory.Delete(basePath, recursive: true);
+        }
     }
 }

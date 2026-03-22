@@ -17,7 +17,7 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
     private readonly SearchOperation<TK, TV> _searchOp;
     private readonly IIndexIOSession<TK> _session;
     private readonly BPlusTreeNodeFactory<TK, TV> _factory;
-    private readonly SemaphoreSlim _gate = new(1, 1);
+    private readonly AsyncReaderWriterLock _gate = new();
 
     public BPlusTreeIndexManager(
         IIndexStorageManager storage,
@@ -65,33 +65,33 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
 
     public async Task<TV?> GetAsync(TK key)
     {
-        await _gate.WaitAsync();
+        await _gate.EnterReadLockAsync();
         try
         {
             return await _searchOp.SearchAsync(key);
         }
         finally
         {
-            _gate.Release();
+            _gate.ExitReadLock();
         }
     }
 
     public async Task PutAsync(TK key, TV value)
     {
-        await _gate.WaitAsync();
+        await _gate.EnterWriteLockAsync();
         try
         {
             await _mutationEngine.MutateAsync(new MutationRequest<TK, TV>(MutationKind.Upsert, key, value));
         }
         finally
         {
-            _gate.Release();
+            _gate.ExitWriteLock();
         }
     }
 
     public async Task<bool> RemoveAsync(TK key)
     {
-        await _gate.WaitAsync();
+        await _gate.EnterWriteLockAsync();
         try
         {
             var result = await _mutationEngine.MutateAsync(new MutationRequest<TK, TV>(MutationKind.Delete, key));
@@ -99,7 +99,7 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         }
         finally
         {
-            _gate.Release();
+            _gate.ExitWriteLock();
         }
     }
 
@@ -117,7 +117,7 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
 
     public async Task<int> CountAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.EnterReadLockAsync();
         try
         {
             // Traverse leaf nodes via NextLeaf links, summing KeyCount.
@@ -126,7 +126,7 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         }
         finally
         {
-            _gate.Release();
+            _gate.ExitReadLock();
         }
     }
     
@@ -154,14 +154,14 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
 
     public async Task FlushAsync()
     {
-        await _gate.WaitAsync();
+        await _gate.EnterWriteLockAsync();
         try
         {
             await _mutationEngine.CommitAsync();
         }
         finally
         {
-            _gate.Release();
+            _gate.ExitWriteLock();
         }
     }
 

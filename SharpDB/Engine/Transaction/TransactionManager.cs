@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using Serilog;
 using SharpDB.Core.Abstractions.Concurrency;
 using SharpDB.Core.Abstractions.Serialization;
@@ -7,6 +8,8 @@ namespace SharpDB.Engine.Transaction;
 
 public class TransactionManager : ITransactionManager
 {
+    private const int GcInterval = 100;
+
     private readonly ILockManager _lockManager;
     private readonly ILogger _logger = Log.ForContext<TransactionManager>();
     private readonly IObjectSerializer _serializer;
@@ -17,10 +20,12 @@ public class TransactionManager : ITransactionManager
     private readonly int _walCheckpointInterval;
     private readonly Func<Task<long>>? _checkpointFactory;
     private readonly Func<Task>? _indexFlushAsync;
+    private readonly ConcurrentDictionary<long, long> _activeTransactions = new(); // txnId → beginTimestamp
     private long _currentTimestamp = 1;
     private long _pendingCheckpointCount;
     private int _checkpointWorkerRunning;
     private long _commitCount;
+    private long _gcCommitCount;
     private long _nextTxnId = 1;
 
     public TransactionManager(
@@ -50,6 +55,8 @@ public class TransactionManager : ITransactionManager
         var txnId = Interlocked.Increment(ref _nextTxnId);
         var timestamp = Interlocked.Increment(ref _currentTimestamp);
 
+        _activeTransactions[txnId] = timestamp;
+
         // Log transaction begin to WAL
         _walManager?.LogTransactionBegin(txnId);
 
@@ -70,6 +77,8 @@ public class TransactionManager : ITransactionManager
     {
         var commitTimestamp = Interlocked.Increment(ref _currentTimestamp);
 
+        _activeTransactions.TryRemove(transaction.TransactionId, out _);
+
         // Log commit to WAL before making changes permanent
         _walManager?.LogTransactionCommit(transaction.TransactionId);
         _walManager?.Flush();
@@ -80,10 +89,13 @@ public class TransactionManager : ITransactionManager
         await _lockManager.ReleaseAllLocksAsync(new TransactionId(transaction.TransactionId));
 
         TryScheduleCheckpoint();
+        TryScheduleGarbageCollection();
     }
 
     public async Task RollbackAsync(ITransaction transaction)
     {
+        _activeTransactions.TryRemove(transaction.TransactionId, out _);
+
         // Log abort to WAL
         _walManager?.LogTransactionAbort(transaction.TransactionId);
 
@@ -166,5 +178,20 @@ public class TransactionManager : ITransactionManager
         {
             _logger.Warning(ex, "Auto-checkpoint failed. Commit path remains successful.");
         }
+    }
+
+    private void TryScheduleGarbageCollection()
+    {
+        var count = Interlocked.Increment(ref _gcCommitCount);
+        if (count % GcInterval != 0)
+            return;
+
+        // Snapshot values to avoid InvalidOperationException if the dictionary
+        // becomes empty between the IsEmpty check and Min() evaluation.
+        var minActive = long.MaxValue;
+        foreach (var ts in _activeTransactions.Values)
+            if (ts < minActive) minActive = ts;
+
+        _ = _versionManager.GarbageCollectAsync(minActive);
     }
 }

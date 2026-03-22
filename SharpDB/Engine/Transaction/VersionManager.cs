@@ -7,19 +7,22 @@ namespace SharpDB.Engine.Transaction;
 
 public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
 {
-    private readonly object _sync = new();
+    private const int LockBuckets = 256;
+    private readonly object[] _stripedLocks = Enumerable.Range(0, LockBuckets).Select(_ => new object()).ToArray();
     private readonly ConcurrentDictionary<Pointer, List<VersionedRecord>> _versionChains = new();
     private readonly ConcurrentDictionary<long, List<PendingVersionEntry>> _pendingByTxn = new();
     private readonly ConcurrentDictionary<Pointer, Pointer> _chainKeyByPointer = new();
     private long _nextWriteOrder;
     private long _nextCommitOrder;
 
+    private object GetLock(Pointer chainKey) => _stripedLocks[(int)((uint)chainKey.GetHashCode() % LockBuckets)];
+
     public async Task<VersionedRecord?> ReadAsync(Pointer pointer, long readTimestamp, long? transactionId = null)
     {
         var chainKey = ResolveChainKey(pointer);
         if (_versionChains.TryGetValue(chainKey, out var chain))
         {
-            lock (_sync)
+            lock (GetLock(chainKey))
             {
                 if (transactionId.HasValue)
                 {
@@ -105,7 +108,7 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
             IsDeleted = isDeleteMarker
         };
 
-        lock (_sync)
+        lock (GetLock(chainKey))
         {
             var chain = _versionChains.GetOrAdd(chainKey, _ => []);
             chain.Add(newVersion);
@@ -124,7 +127,17 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
         if (!_pendingByTxn.TryRemove(txnId, out var pendingVersions))
             return Task.CompletedTask;
 
-        lock (_sync)
+        // Acquire all relevant chain locks in a consistent (sorted) order to prevent deadlocks
+        // while atomically committing all versions of the transaction. This ensures no reader
+        // can observe a partially-committed transaction.
+        var buckets = pendingVersions
+            .Select(p => (int)((uint)p.ChainKey.GetHashCode() % LockBuckets))
+            .Distinct()
+            .Order()
+            .ToArray();
+
+        AcquireAll(buckets);
+        try
         {
             foreach (var pending in pendingVersions)
             {
@@ -154,8 +167,24 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
                 pending.Version.CommitOrder = Interlocked.Increment(ref _nextCommitOrder);
             }
         }
+        finally
+        {
+            ReleaseAll(buckets);
+        }
 
         return Task.CompletedTask;
+    }
+
+    private void AcquireAll(int[] sortedBuckets)
+    {
+        foreach (var b in sortedBuckets)
+            Monitor.Enter(_stripedLocks[b]);
+    }
+
+    private void ReleaseAll(int[] sortedBuckets)
+    {
+        foreach (var b in sortedBuckets)
+            Monitor.Exit(_stripedLocks[b]);
     }
 
     public async Task AbortAsync(long txnId)
@@ -165,9 +194,9 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
 
         var pointersToDelete = new List<Pointer>();
 
-        lock (_sync)
+        foreach (var pending in pendingVersions)
         {
-            foreach (var pending in pendingVersions)
+            lock (GetLock(pending.ChainKey))
             {
                 if (!pending.Version.IsDeleted)
                 {
@@ -203,10 +232,21 @@ public class VersionManager(IDatabaseStorageManager storage) : IVersionManager
 
     public Task GarbageCollectAsync(long minActiveTimestamp)
     {
-        lock (_sync)
+        foreach (var key in _versionChains.Keys.ToList())
         {
-            foreach (var (_, chain) in _versionChains)
+            lock (GetLock(key))
+            {
+                if (!_versionChains.TryGetValue(key, out var chain))
+                    continue;
+
                 chain.RemoveAll(v => v.IsCommitted && v.EndTimestamp < minActiveTimestamp);
+
+                if (chain.Count == 0)
+                {
+                    _versionChains.TryRemove(key, out _);
+                    _chainKeyByPointer.TryRemove(key, out _);
+                }
+            }
         }
 
         return Task.CompletedTask;
