@@ -1,5 +1,6 @@
 using SharpDB.DataStructures;
 using SharpDB.Index.Manager;
+using SharpDB.Serialization;
 
 namespace SharpDB.Index.Partition;
 
@@ -93,29 +94,6 @@ public class PartitionedIndexManager<TKey>(
         return results;
     }
 
-    // Sentinel keys used to compute partition ranges for GreaterThan/LessThan queries.
-    // These are type-safe extremes that the strategy maps to partition 0 or partitionCount-1.
-    private static TKey GetMinKey()
-    {
-        var type = typeof(TKey);
-        if (type == typeof(long)) return (TKey)(object)long.MinValue;
-        if (type == typeof(int)) return (TKey)(object)int.MinValue;
-        if (type == typeof(string)) return (TKey)(object)string.Empty;
-        if (type == typeof(DateTime)) return (TKey)(object)DateTime.MinValue;
-        if (type == typeof(decimal)) return (TKey)(object)decimal.MinValue;
-        if (type == typeof(Guid)) return (TKey)(object)Guid.Empty;
-        return default!;
-    }
-
-    private static TKey GetMaxKey()
-    {
-        var type = typeof(TKey);
-        if (type == typeof(long)) return (TKey)(object)long.MaxValue;
-        if (type == typeof(int)) return (TKey)(object)int.MaxValue;
-        if (type == typeof(string)) return (TKey)(object)new string('\uffff', 255);
-        if (type == typeof(DateTime)) return (TKey)(object)DateTime.MaxValue;
-        if (type == typeof(decimal)) return (TKey)(object)decimal.MaxValue;
-        if (type == typeof(Guid)) return (TKey)(object)new Guid(new byte[] { 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255 });
-        return default!;
-    }
+    private static TKey GetMinKey() => SerializerRegistry.GetMinValue<TKey>();
+    private static TKey GetMaxKey() => SerializerRegistry.GetMaxValue<TKey>();
 }

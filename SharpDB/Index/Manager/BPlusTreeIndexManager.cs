@@ -2,7 +2,6 @@ using SharpDB.Core.Abstractions.Index;
 using SharpDB.Core.Abstractions.Serialization;
 using SharpDB.Core.Abstractions.Sessions;
 using SharpDB.Core.Abstractions.Storage;
-using SharpDB.DataStructures;
 using SharpDB.Index.Node;
 using SharpDB.Index.Operations;
 using SharpDB.Index.Session;
@@ -26,8 +25,8 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         int indexId,
         int degree)
     {
-        var keySerializer = CreateSerializer<TK>();
-        var valueSerializer = CreateSerializer<TV>();
+        var keySerializer = SerializerRegistry.GetSerializer<TK>();
+        var valueSerializer = SerializerRegistry.GetSerializer<TV>();
         _factory = new BPlusTreeNodeFactory<TK, TV>(keySerializer, valueSerializer, degree);
 
         _storage = storage;
@@ -112,13 +111,7 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
     public async Task<bool> ContainsKeyAsync(TK key)
     {
         var value = await GetAsync(key);
-        if (value == null)
-            return false;
-
-        if (value is Pointer pointer)
-            return pointer.Type == Pointer.TypeData && pointer.Position > 0;
-
-        return true;
+        return value != null;
     }
 
     public async Task<int> CountAsync()
@@ -136,28 +129,6 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         }
     }
     
-    private T GetMinValue<T>() where T : IComparable<T>
-    {
-        var type = typeof(T);
-        if (type == typeof(long)) return (T)(object)long.MinValue;
-        if (type == typeof(int)) return (T)(object)int.MinValue;
-        if (type == typeof(string)) return (T)(object)string.Empty;
-        if (type == typeof(DateTime)) return (T)(object)DateTime.MinValue;
-        if (type == typeof(decimal)) return (T)(object)decimal.MinValue;
-        return default!;
-    }
-    
-    private T GetMaxValue<T>() where T : IComparable<T>
-    {
-        var type = typeof(T);
-        if (type == typeof(long)) return (T)(object)long.MaxValue;
-        if (type == typeof(int)) return (T)(object)int.MaxValue;
-        if (type == typeof(string)) return (T)(object)new string('\uffff', 255); // Max unicode string
-        if (type == typeof(DateTime)) return (T)(object)DateTime.MaxValue;
-        if (type == typeof(decimal)) return (T)(object)decimal.MaxValue;
-        return default!;
-    }
-
     public async Task FlushAsync()
     {
         await _gate.EnterWriteLockAsync();
@@ -191,13 +162,4 @@ public class BPlusTreeIndexManager<TK, TV> : IUniqueTreeIndexManager<TK, TV>
         _gate.Dispose();
     }
 
-    private ISerializer<T> CreateSerializer<T>()
-    {
-        var type = typeof(T);
-        if (type == typeof(long)) return (ISerializer<T>)new LongSerializer();
-        if (type == typeof(int)) return (ISerializer<T>)new IntSerializer();
-        if (type == typeof(string)) return (ISerializer<T>)new StringSerializer(255);
-        if (type == typeof(Pointer)) return (ISerializer<T>)new PointerSerializer();
-        throw new NotSupportedException($"Type {type} not supported");
-    }
 }

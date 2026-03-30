@@ -888,17 +888,8 @@ public class CollectionManager<T, TKey> : IForeignKeyLookup, IVacuumable
         }
     }
 
-    private ISerializer<TType> CreateSerializer<TType>() where TType : IComparable<TType>
-    {
-        var type = typeof(TType);
-        if (type == typeof(long)) return (ISerializer<TType>)new LongSerializer();
-        if (type == typeof(int)) return (ISerializer<TType>)new IntSerializer();
-        if (type == typeof(string)) return (ISerializer<TType>)new StringSerializer(255);
-        if (type == typeof(DateTime)) return (ISerializer<TType>)new DateTimeSerializer();
-        if (type == typeof(decimal)) return (ISerializer<TType>)new DecimalSerializer();
-        if (type == typeof(Guid)) return (ISerializer<TType>)(object)new GuidSerializer();
-        throw new NotSupportedException($"Type {type} not supported");
-    }
+    private static ISerializer<TType> CreateSerializer<TType>() where TType : IComparable<TType>
+        => SerializerRegistry.GetSerializer<TType>();
 
     private static bool IsValidDataPointer(Pointer pointer)
     {
