@@ -1,0 +1,795 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SharpDB V2 Architecture</title>
+<script>
+  (function () {
+    const saved = localStorage.getItem("sharpdb-v2-theme");
+    const dark = saved ? saved === "dark" : matchMedia("(prefers-color-scheme: dark)").matches;
+    document.documentElement.classList.toggle("dark", dark);
+  })();
+</script>
+<style>
+  :root {
+    --bg: #f8f6ee;
+    --surface: #ffffff;
+    --surface-2: #eee9dd;
+    --ink: #171716;
+    --body: #393936;
+    --muted: #7b7b74;
+    --line: #cec8b8;
+    --line-soft: #e3ded0;
+    --zone: rgba(23, 23, 22, 0.028);
+    --api: #3f7d7b;
+    --api-soft: rgba(63, 125, 123, 0.12);
+    --sql: #8a6f2a;
+    --sql-soft: rgba(138, 111, 42, 0.14);
+    --engine: #b46143;
+    --engine-soft: rgba(180, 97, 67, 0.13);
+    --durable: #7a6aa7;
+    --durable-soft: rgba(122, 106, 167, 0.13);
+    --storage: #557a46;
+    --storage-soft: rgba(85, 122, 70, 0.13);
+    --risk: #b0443e;
+    --risk-soft: rgba(176, 68, 62, 0.12);
+    --ready: #477a50;
+    --gap: #9b5a42;
+    --shadow: rgba(20, 20, 18, 0.10);
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    --serif: ui-serif, Georgia, "Times New Roman", serif;
+  }
+  html.dark {
+    --bg: #151615;
+    --surface: #20211f;
+    --surface-2: #2b2c29;
+    --ink: #f7f4ea;
+    --body: #d4cfbf;
+    --muted: #989386;
+    --line: #464640;
+    --line-soft: #31322f;
+    --zone: rgba(247, 244, 234, 0.035);
+    --api: #73bbb7;
+    --api-soft: rgba(115, 187, 183, 0.15);
+    --sql: #d1b057;
+    --sql-soft: rgba(209, 176, 87, 0.15);
+    --engine: #df896b;
+    --engine-soft: rgba(223, 137, 107, 0.15);
+    --durable: #b2a1e0;
+    --durable-soft: rgba(178, 161, 224, 0.16);
+    --storage: #94bd81;
+    --storage-soft: rgba(148, 189, 129, 0.15);
+    --risk: #e07c75;
+    --risk-soft: rgba(224, 124, 117, 0.15);
+    --ready: #8fcf99;
+    --gap: #d39178;
+    --shadow: rgba(0, 0, 0, 0.28);
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg);
+    color: var(--body);
+    font-family: var(--sans);
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+  .bar {
+    height: 66px;
+    display: flex;
+    align-items: center;
+    gap: 18px;
+    padding: 10px 18px;
+    border-bottom: 1px solid var(--line-soft);
+    background: var(--bg);
+  }
+  .title h1 {
+    margin: 0;
+    color: var(--ink);
+    font-family: var(--serif);
+    font-weight: 520;
+    font-size: 20px;
+    letter-spacing: 0;
+  }
+  .title div {
+    margin-top: 2px;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 10.5px;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+  }
+  .spacer { flex: 1; }
+  .chips { display: flex; gap: 7px; flex-wrap: wrap; align-items: center; justify-content: flex-end; }
+  .chip, #themeToggle {
+    border: 1px solid var(--line);
+    background: transparent;
+    color: var(--muted);
+    border-radius: 7px;
+    padding: 6px 10px;
+    font-family: var(--mono);
+    font-size: 11px;
+    cursor: pointer;
+    transition: color .15s ease, border-color .15s ease, background .15s ease;
+  }
+  .chip:hover, #themeToggle:hover { color: var(--ink); border-color: var(--muted); }
+  .chip.on { background: var(--ink); border-color: var(--ink); color: var(--bg); }
+  .shell { position: relative; height: calc(100% - 66px); min-height: 0; }
+  .stage { position: absolute; inset: 0; }
+  svg { display: block; width: 100%; height: 100%; }
+  .zone rect {
+    fill: var(--zone);
+    stroke: var(--line);
+    stroke-dasharray: 7 6;
+    stroke-width: 1.1;
+    rx: 18;
+  }
+  .zone .ztitle {
+    fill: var(--muted);
+    font: 700 12px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.10em;
+  }
+  .zone .zsub {
+    fill: var(--muted);
+    font: 11px var(--mono);
+  }
+  .node { cursor: pointer; transition: opacity .2s ease; }
+  .node rect, .node path.diamond {
+    fill: var(--surface);
+    stroke: var(--line);
+    stroke-width: 1.35;
+    rx: 9;
+    transition: stroke .15s ease, fill .15s ease, filter .15s ease;
+  }
+  .node:hover rect, .node:hover path.diamond { stroke: var(--ink); filter: drop-shadow(0 7px 12px var(--shadow)); }
+  .node.sel rect, .node.sel path.diamond { stroke: var(--engine); stroke-width: 2.2; }
+  .node .k {
+    fill: var(--muted);
+    font: 700 10px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    pointer-events: none;
+  }
+  .node .t {
+    fill: var(--ink);
+    font: 700 15px var(--sans);
+    pointer-events: none;
+  }
+  .node .m {
+    fill: var(--muted);
+    font: 11px var(--mono);
+    pointer-events: none;
+  }
+  .node.api rect { fill: var(--api-soft); stroke: var(--api); }
+  .node.sql rect { fill: var(--sql-soft); stroke: var(--sql); }
+  .node.engine rect, .node.engine path.diamond { fill: var(--engine-soft); stroke: var(--engine); }
+  .node.durable rect { fill: var(--durable-soft); stroke: var(--durable); }
+  .node.storage rect { fill: var(--storage-soft); stroke: var(--storage); }
+  .node.gap rect { fill: var(--risk-soft); stroke: var(--risk); stroke-dasharray: 6 4; }
+  .node.external rect { stroke-dasharray: 6 4; }
+  .mini rect {
+    fill: var(--surface);
+    stroke: var(--line);
+    stroke-width: 1;
+    rx: 6;
+  }
+  .mini .mt {
+    fill: var(--ink);
+    font: 700 10px var(--mono);
+    pointer-events: none;
+  }
+  .mini .ms {
+    fill: var(--muted);
+    font: 9px var(--mono);
+    pointer-events: none;
+  }
+  .edge {
+    fill: none;
+    stroke: var(--muted);
+    stroke-width: 1.55;
+    marker-end: url(#arrow-muted);
+    transition: opacity .2s ease, stroke .2s ease;
+  }
+  .edge.soft { stroke-dasharray: 5 5; }
+  .edge.heavy { stroke-width: 2.1; }
+  .edge-label {
+    fill: var(--muted);
+    font: 10.5px var(--mono);
+    transition: opacity .2s ease, fill .2s ease;
+  }
+  .flowing .edge { opacity: .14; }
+  .flowing .edge-label { opacity: .12; }
+  .flowing .node { opacity: .30; }
+  .flowing .zone { opacity: .55; }
+  .flowing .edge.lit {
+    opacity: 1;
+    stroke: var(--engine);
+    marker-end: url(#arrow-hot);
+    stroke-dasharray: 8 6;
+    animation: march 1s linear infinite;
+  }
+  .flowing .node.lit { opacity: 1; }
+  .flowing .node.lit rect, .flowing .node.lit path.diamond { stroke: var(--engine); stroke-width: 2; }
+  .flowing .edge-label.lit { opacity: 1; fill: var(--engine); }
+  @keyframes march { to { stroke-dashoffset: -14; } }
+  @media (prefers-reduced-motion: reduce) { .flowing .edge.lit { animation: none; } }
+  .rail text {
+    font: 700 10px var(--mono);
+    fill: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+  .rail rect {
+    fill: var(--surface);
+    stroke: var(--line);
+    rx: 7;
+  }
+  .rail .ready { fill: var(--storage-soft); stroke: var(--ready); }
+  .rail .gap { fill: var(--risk-soft); stroke: var(--gap); stroke-dasharray: 5 4; }
+  .panel {
+    position: absolute;
+    right: 16px;
+    bottom: 16px;
+    width: 340px;
+    max-width: calc(100% - 32px);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 14px 13px;
+    box-shadow: 0 12px 34px var(--shadow);
+    display: none;
+  }
+  .panel.show { display: block; }
+  .panel h2 {
+    margin: 0 0 3px;
+    color: var(--ink);
+    font-family: var(--serif);
+    font-size: 17px;
+    font-weight: 520;
+    letter-spacing: 0;
+  }
+  .panel .meta {
+    color: var(--muted);
+    font: 10.5px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    margin-bottom: 9px;
+  }
+  .panel p {
+    margin: 0 0 10px;
+    font-size: 12px;
+    line-height: 1.45;
+  }
+  .panel ul { margin: 0; padding: 0; list-style: none; display: grid; gap: 6px; }
+  .panel li {
+    font: 11px/1.35 var(--mono);
+    color: var(--body);
+    padding-left: 13px;
+    position: relative;
+  }
+  .panel li::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    top: 7px;
+    width: 5px;
+    height: 5px;
+    border-radius: 2px;
+    background: var(--engine);
+  }
+  .flowcap {
+    position: absolute;
+    left: 16px;
+    bottom: 16px;
+    width: 460px;
+    max-width: calc(100% - 32px);
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    padding: 12px 15px;
+    box-shadow: 0 12px 34px var(--shadow);
+    display: none;
+  }
+  .flowcap.show { display: block; }
+  .flowcap .name {
+    color: var(--engine);
+    font: 700 10.5px var(--mono);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+    margin-bottom: 6px;
+  }
+  .flowcap ol { margin: 0 0 0 18px; padding: 0; }
+  .flowcap li { font-size: 12px; line-height: 1.45; margin-bottom: 3px; }
+  .legend {
+    position: absolute;
+    left: 18px;
+    top: 18px;
+    display: flex;
+    gap: 11px;
+    flex-wrap: wrap;
+    color: var(--muted);
+    font: 10.5px var(--mono);
+  }
+  .legend span { display: inline-flex; align-items: center; gap: 6px; }
+  .sw { width: 18px; height: 10px; border: 1.3px solid var(--line); border-radius: 3px; background: var(--surface); }
+  .sw.api { background: var(--api-soft); border-color: var(--api); }
+  .sw.sql { background: var(--sql-soft); border-color: var(--sql); }
+  .sw.engine { background: var(--engine-soft); border-color: var(--engine); }
+  .sw.durable { background: var(--durable-soft); border-color: var(--durable); }
+  .sw.storage { background: var(--storage-soft); border-color: var(--storage); }
+  .sw.gap { background: var(--risk-soft); border-color: var(--risk); border-style: dashed; }
+  @media (max-width: 980px) {
+    body { overflow: auto; }
+    .bar { height: auto; align-items: flex-start; flex-direction: column; }
+    .shell { height: 900px; }
+    .panel, .flowcap { position: static; margin: 12px 16px; width: auto; }
+  }
+</style>
+</head>
+<body>
+<div class="bar">
+  <div class="title">
+    <h1>SharpDB V2 desired architecture</h1>
+    <div>scaffold-to-implementation map · net10.0 · embedded + PostgreSQL wire</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-flow="all">Everything</button>
+    <button class="chip" data-flow="embedded-write">Embedded write</button>
+    <button class="chip" data-flow="sql-select">SQL select</button>
+    <button class="chip" data-flow="commit">Commit</button>
+    <button class="chip" data-flow="recovery">Recovery</button>
+    <button class="chip" data-flow="maintenance">Maintenance</button>
+    <button class="chip" data-flow="pg">Pg session</button>
+    <button id="themeToggle">Theme</button>
+  </div>
+</div>
+
+<div class="shell">
+  <div class="stage" id="stage">
+    <div class="legend">
+      <span><i class="sw api"></i>public API</span>
+      <span><i class="sw sql"></i>SQL / protocol</span>
+      <span><i class="sw engine"></i>engine core</span>
+      <span><i class="sw durable"></i>durability</span>
+      <span><i class="sw storage"></i>storage</span>
+      <span><i class="sw gap"></i>scaffold gap</span>
+    </div>
+
+<svg viewBox="0 0 1800 1260" preserveAspectRatio="xMidYMid meet" role="img" aria-label="SharpDB V2 architecture diagram">
+  <defs>
+    <marker id="arrow-muted" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--muted)"></path>
+    </marker>
+    <marker id="arrow-hot" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill: var(--engine)"></path>
+    </marker>
+  </defs>
+
+  <g class="zone">
+    <rect x="40" y="90" width="255" height="910"></rect>
+    <text class="ztitle" x="62" y="122">entry points</text>
+    <text class="zsub" x="62" y="142">API users and PostgreSQL clients</text>
+  </g>
+  <g class="zone">
+    <rect x="345" y="90" width="295" height="910"></rect>
+    <text class="ztitle" x="352" y="122">surface adapters</text>
+    <text class="zsub" x="352" y="142">typed API, SQL AST, wire protocol</text>
+  </g>
+  <g class="zone">
+    <rect x="700" y="90" width="330" height="910"></rect>
+    <text class="ztitle" x="697" y="122">operation core</text>
+    <text class="zsub" x="697" y="142">schema, context, validation, orchestration</text>
+  </g>
+  <g class="zone">
+    <rect x="1080" y="90" width="305" height="910"></rect>
+    <text class="ztitle" x="1082" y="122">access methods</text>
+    <text class="zsub" x="1082" y="142">B+Tree + MVCC + transactions</text>
+  </g>
+  <g class="zone">
+    <rect x="1428" y="90" width="327" height="910"></rect>
+    <text class="ztitle" x="1432" y="122">durability + storage</text>
+    <text class="zsub" x="1432" y="142">WAL, recovery, pages, files</text>
+  </g>
+
+  <path class="edge heavy" id="e-app-db" d="M260,205 C306,205 314,205 365,205"></path>
+  <path class="edge heavy" id="e-driver-server" d="M260,445 C305,445 312,387 365,387"></path>
+  <path class="edge" id="e-server-startup" d="M495,348 C515,328 520,313 520,330"></path>
+  <path class="edge" id="e-startup-session" d="M520,360 L520,438"></path>
+  <path class="edge" id="e-session-simple" d="M500,510 C492,522 485,532 478,548"></path>
+  <path class="edge" id="e-session-extended" d="M545,510 C562,525 568,545 560,548"></path>
+  <path class="edge" id="e-sql-lexer" d="M500,626 L500,652"></path>
+  <path class="edge" id="e-lexer-parser" d="M500,710 L500,735"></path>
+  <path class="edge" id="e-parser-planner" d="M500,793 L500,818"></path>
+  <path class="edge" id="e-planner-executor" d="M500,876 L500,901"></path>
+  <path class="edge" id="e-executor-db" d="M620,930 C695,852 708,330 760,254"></path>
+  <path class="edge heavy" id="e-db-open" d="M625,205 C660,205 670,205 720,205"></path>
+  <path class="edge" id="e-db-context" d="M870,254 L870,285"></path>
+  <path class="edge" id="e-context-schema" d="M825,367 C805,388 790,410 780,430"></path>
+  <path class="edge" id="e-context-constraints" d="M900,367 C910,430 900,500 895,540"></path>
+  <path class="edge" id="e-context-partition" d="M870,367 C860,480 858,570 870,645"></path>
+  <path class="edge" id="e-context-tx" d="M1000,320 C1040,320 1055,320 1115,320"></path>
+  <path class="edge" id="e-constraints-index" d="M1000,575 C1055,585 1088,598 1120,610"></path>
+  <path class="edge" id="e-partition-index" d="M1010,686 C1060,670 1088,642 1120,620"></path>
+  <path class="edge" id="e-schema-serializer" d="M815,514 C870,620 940,700 1120,710"></path>
+  <path class="edge" id="e-tx-lock" d="M1255,352 L1255,390"></path>
+  <path class="edge" id="e-tx-version" d="M1210,352 L1210,465"></path>
+  <path class="edge heavy" id="e-index-pageid" d="M1370,610 L1430,610"></path>
+  <path class="edge" id="e-index-btree" d="M1245,647 L1245,805"></path>
+  <path class="edge" id="e-version-pages" d="M1380,500 L1410,500 L1410,585 L1430,585"></path>
+  <path class="edge" id="e-serializer-pages" d="M1370,720 L1430,720"></path>
+  <path class="edge heavy" id="e-tx-wal" d="M1365,290 L1448,290"></path>
+  <path class="edge" id="e-wal-group" d="M1573,312 L1573,350"></path>
+  <path class="edge" id="e-group-file" d="M1698,387 L1720,387 L1720,886 L1703,886"></path>
+  <path class="edge" id="e-recovery-store" d="M1448,510 L1418,510 L1418,625 L1430,625"></path>
+  <path class="edge soft" id="e-recovery-wal" d="M1448,270 L1418,270 L1418,475 L1448,475"></path>
+  <path class="edge" id="e-buffer-store" d="M1565,692 L1565,720"></path>
+  <path class="edge" id="e-store-files" d="M1565,802 L1565,850"></path>
+  <path class="edge soft" id="e-vacuum-index" d="M1010,790 C1075,740 1100,650 1120,610"></path>
+  <path class="edge soft" id="e-backup-store" d="M1010,790 C1190,880 1340,820 1430,725"></path>
+  <path class="edge soft" id="e-checkpoint" d="M1448,312 C1390,380 1360,430 1290,475"></path>
+
+  <text class="edge-label" data-e="e-app-db" x="297" y="190">typed collection API</text>
+  <text class="edge-label" data-e="e-driver-server" x="292" y="402">connect TCP :5432</text>
+  <text class="edge-label" data-e="e-sql-lexer" x="515" y="642">SQL text</text>
+  <text class="edge-label" data-e="e-db-open" x="642" y="190">OpenCollection</text>
+  <text class="edge-label" data-e="e-context-tx" x="1036" y="305">begin / join tx</text>
+  <text class="edge-label" data-e="e-partition-index" x="1018" y="660">route partition</text>
+  <text class="edge-label" data-e="e-index-pageid" x="1332" y="595">PageId lookup</text>
+  <text class="edge-label" data-e="e-version-pages" x="1378" y="520">visible version page</text>
+  <text class="edge-label" data-e="e-tx-wal" x="1378" y="275">append intent + commit</text>
+  <text class="edge-label" data-e="e-group-file" x="1666" y="878">force durable</text>
+  <text class="edge-label" data-e="e-recovery-store" x="1390" y="555">redo / undo</text>
+  <text class="edge-label" data-e="e-backup-store" x="1215" y="718">consistent copy</text>
+
+  <g class="node api" data-k="host">
+    <rect x="70" y="165" width="190" height="88"></rect>
+    <text class="k" x="90" y="190">consumer</text>
+    <text class="t" x="90" y="215">Host app</text>
+    <text class="m" x="90" y="237">C# embedded API</text>
+  </g>
+  <g class="node sql external" data-k="pgclient">
+    <rect x="70" y="405" width="190" height="88"></rect>
+    <text class="k" x="90" y="430">consumer</text>
+    <text class="t" x="90" y="455">PostgreSQL client</text>
+    <text class="m" x="90" y="477">Npgsql / psql wire</text>
+  </g>
+
+  <g class="node api gap" data-k="database">
+    <rect x="365" y="162" width="260" height="92"></rect>
+    <text class="k" x="385" y="187">src/SharpDB.V2</text>
+    <text class="t" x="385" y="212">Database</text>
+    <text class="m" x="385" y="234">owns stores, WAL, tx, maintenance</text>
+  </g>
+  <g class="node api gap" data-k="collection">
+    <rect x="720" y="162" width="280" height="92"></rect>
+    <text class="k" x="740" y="187">src/SharpDB.V2</text>
+    <text class="t" x="740" y="212">Collection&lt;T,TKey&gt;</text>
+    <text class="m" x="740" y="234">CRUD facade + index coordinator</text>
+  </g>
+  <g class="node sql gap" data-k="server">
+    <rect x="365" y="348" width="245" height="78"></rect>
+    <text class="k" x="385" y="373">src/SharpDB.V2.Server</text>
+    <text class="t" x="385" y="398">DatabaseServer</text>
+    <text class="m" x="385" y="416">listener + session manager</text>
+  </g>
+  <g class="node sql gap" data-k="startup">
+    <rect x="390" y="260" width="260" height="70"></rect>
+    <text class="k" x="410" y="285">protocol</text>
+    <text class="t" x="410" y="308">Startup handshake</text>
+  </g>
+  <g class="node sql gap" data-k="session">
+    <rect x="390" y="440" width="260" height="72"></rect>
+    <text class="k" x="410" y="465">session</text>
+    <text class="t" x="410" y="488">ClientSession</text>
+  </g>
+  <g class="node sql gap" data-k="queryhandlers">
+    <rect x="370" y="548" width="260" height="78"></rect>
+    <text class="k" x="390" y="573">protocol</text>
+    <text class="t" x="390" y="596">Simple + extended query</text>
+  </g>
+
+  <g class="node sql gap" data-k="lexer">
+    <rect x="380" y="652" width="240" height="58"></rect>
+    <text class="k" x="400" y="675">SharpDB.V2.Sql</text>
+    <text class="t" x="400" y="696">Lexer</text>
+  </g>
+  <g class="node sql gap" data-k="parser">
+    <rect x="380" y="735" width="240" height="58"></rect>
+    <text class="k" x="400" y="758">Parsing/Ast</text>
+    <text class="t" x="400" y="779">Parser + AST</text>
+  </g>
+  <g class="node sql gap" data-k="planner">
+    <rect x="380" y="818" width="240" height="58"></rect>
+    <text class="k" x="400" y="841">Planning</text>
+    <text class="t" x="400" y="862">QueryPlanner</text>
+  </g>
+  <g class="node sql gap" data-k="executor">
+    <rect x="380" y="901" width="240" height="58"></rect>
+    <text class="k" x="400" y="924">Execution</text>
+    <text class="t" x="400" y="945">QueryExecutor</text>
+  </g>
+
+  <g class="node engine gap" data-k="context">
+    <rect x="700" y="285" width="300" height="82"></rect>
+    <text class="k" x="720" y="310">Operations</text>
+    <text class="t" x="720" y="335">OperationContextFactory</text>
+    <text class="m" x="720" y="354">transaction + page buffer lifetime</text>
+  </g>
+  <g class="node engine gap" data-k="schema">
+    <rect x="700" y="430" width="230" height="84"></rect>
+    <text class="k" x="720" y="455">Schema</text>
+    <text class="t" x="720" y="480">SchemaStore</text>
+    <text class="m" x="720" y="500">collections + index definitions</text>
+  </g>
+  <g class="node engine gap" data-k="constraints">
+    <rect x="770" y="535" width="230" height="84"></rect>
+    <text class="k" x="790" y="560">Constraints</text>
+    <text class="t" x="790" y="585">Composite validators</text>
+    <text class="m" x="790" y="605">foreign keys + unique checks</text>
+  </g>
+  <g class="node engine gap" data-k="serializer">
+    <rect x="1120" y="690" width="250" height="84"></rect>
+    <text class="k" x="1140" y="715">Serialization</text>
+    <text class="t" x="1140" y="740">BinarySerializer</text>
+    <text class="m" x="1140" y="760">IBufferWriter + compiled factory</text>
+  </g>
+  <g class="node engine gap" data-k="index">
+    <rect x="1120" y="565" width="250" height="82"></rect>
+    <text class="k" x="1140" y="590">BTree</text>
+    <text class="t" x="1140" y="615">Unique / Duplicate indexes</text>
+    <text class="m" x="1140" y="633">cursor, split policy, leaf links</text>
+  </g>
+  <g class="node engine gap" data-k="btreepages">
+    <rect x="1105" y="805" width="275" height="190"></rect>
+    <text class="k" x="1125" y="830">B+Tree page layout</text>
+    <g class="mini">
+      <rect x="1198" y="845" width="88" height="34"></rect>
+      <text class="mt" x="1242" y="867" text-anchor="middle">root</text>
+      <path class="edge soft" d="M1220,879 L1170,900"></path>
+      <path class="edge soft" d="M1264,879 L1314,900"></path>
+      <rect x="1125" y="900" width="92" height="34"></rect>
+      <text class="mt" x="1171" y="922" text-anchor="middle">internal</text>
+      <rect x="1268" y="900" width="92" height="34"></rect>
+      <text class="mt" x="1314" y="922" text-anchor="middle">internal</text>
+      <path class="edge soft" d="M1171,934 L1171,947"></path>
+      <path class="edge soft" d="M1314,934 L1314,947"></path>
+      <rect x="1118" y="947" width="96" height="32"></rect>
+      <text class="mt" x="1166" y="968" text-anchor="middle">leaf pages</text>
+      <rect x="1266" y="947" width="96" height="32"></rect>
+      <text class="mt" x="1314" y="968" text-anchor="middle">leaf pages</text>
+      <path class="edge soft" d="M1214,963 L1266,963"></path>
+    </g>
+    <text class="m" x="1125" y="988">sorted keys · PageId payloads · leaf sibling links</text>
+  </g>
+  <g class="node engine gap" data-k="tx">
+    <rect x="1115" y="270" width="250" height="82"></rect>
+    <text class="k" x="1135" y="295">Transactions</text>
+    <text class="t" x="1135" y="320">TransactionManager</text>
+    <text class="m" x="1135" y="338">begin, commit, rollback</text>
+  </g>
+  <g class="node engine gap" data-k="lock">
+    <rect x="1130" y="390" width="250" height="70"></rect>
+    <text class="k" x="1150" y="415">Concurrency</text>
+    <text class="t" x="1150" y="438">LockManager</text>
+  </g>
+  <g class="node engine gap" data-k="version">
+    <rect x="1130" y="465" width="250" height="72"></rect>
+    <text class="k" x="1150" y="490">MVCC</text>
+    <text class="t" x="1150" y="513">VersionManager</text>
+  </g>
+  <g class="node engine gap" data-k="auto">
+    <rect x="720" y="750" width="250" height="72"></rect>
+    <text class="k" x="740" y="775">Schema</text>
+    <text class="t" x="740" y="798">AutoIncrementStore</text>
+  </g>
+  <g class="node engine gap" data-k="maintenance">
+    <rect x="720" y="855" width="290" height="82"></rect>
+    <text class="k" x="740" y="880">Maintenance</text>
+    <text class="t" x="740" y="905">VacuumEngine + BackupEngine</text>
+    <text class="m" x="740" y="923">partition-aware vacuum + backup</text>
+  </g>
+  <g class="node engine gap" data-k="partition">
+    <rect x="720" y="645" width="290" height="82"></rect>
+    <text class="k" x="740" y="670">Partitioning</text>
+    <text class="t" x="740" y="695">PartitionRouter&lt;TKey&gt;</text>
+    <text class="m" x="740" y="713">hash strategy · partition descriptors</text>
+  </g>
+
+  <g class="node durable gap" data-k="wal">
+    <rect x="1448" y="230" width="250" height="82"></rect>
+    <text class="k" x="1468" y="255">Wal</text>
+    <text class="t" x="1468" y="280">LogWriter</text>
+    <text class="m" x="1468" y="298">append, ForceSync, group commit</text>
+  </g>
+  <g class="node durable gap" data-k="groupcommit">
+    <rect x="1448" y="350" width="250" height="72"></rect>
+    <text class="k" x="1468" y="375">Wal</text>
+    <text class="t" x="1468" y="398">GroupCommitQueue</text>
+  </g>
+  <g class="node durable gap" data-k="recovery">
+    <rect x="1448" y="470" width="250" height="82"></rect>
+    <text class="k" x="1468" y="495">Wal</text>
+    <text class="t" x="1468" y="520">RecoveryManager</text>
+    <text class="m" x="1468" y="538">analysis, redo, undo, checkpoint</text>
+  </g>
+  <g class="node storage gap" data-k="pagebuffer">
+    <rect x="1430" y="610" width="270" height="82"></rect>
+    <text class="k" x="1450" y="635">Storage</text>
+    <text class="t" x="1450" y="660">PageBuffer</text>
+    <text class="m" x="1450" y="678">pin, dirty tracking, flush</text>
+  </g>
+  <g class="node storage gap" data-k="pagestore">
+    <rect x="1430" y="720" width="270" height="82"></rect>
+    <text class="k" x="1450" y="745">Storage</text>
+    <text class="t" x="1450" y="770">PageStore / FilePageStore</text>
+    <text class="m" x="1450" y="788">page count, sync, random IO</text>
+  </g>
+  <g class="node storage external" data-k="files">
+    <rect x="1458" y="850" width="245" height="72"></rect>
+    <text class="k" x="1478" y="875">filesystem</text>
+    <text class="t" x="1478" y="898">data + index + WAL files</text>
+  </g>
+
+  <g class="rail">
+    <text x="70" y="1148">implementation order</text>
+    <rect class="gap" x="70" y="1168" width="175" height="54"></rect>
+    <text x="84" y="1200">1. storage pages</text>
+    <rect class="gap" x="255" y="1168" width="175" height="54"></rect>
+    <text x="269" y="1200">2. WAL recovery</text>
+    <rect class="gap" x="440" y="1168" width="175" height="54"></rect>
+    <text x="454" y="1200">3. schema serializer</text>
+    <rect class="gap" x="625" y="1168" width="175" height="54"></rect>
+    <text x="639" y="1200">4. partition router</text>
+    <rect class="gap" x="810" y="1168" width="175" height="54"></rect>
+    <text x="824" y="1200">5. B+Tree indexes</text>
+    <rect class="gap" x="995" y="1168" width="175" height="54"></rect>
+    <text x="1009" y="1200">6. tx MVCC locks</text>
+    <rect class="gap" x="1180" y="1168" width="175" height="54"></rect>
+    <text x="1194" y="1200">7. collection CRUD</text>
+    <rect class="gap" x="1365" y="1168" width="175" height="54"></rect>
+    <text x="1379" y="1200">8. SQL executor</text>
+    <rect class="gap" x="1550" y="1168" width="175" height="54"></rect>
+    <text x="1564" y="1194">9. backup/vacuum</text>
+    <text x="1564" y="1212">+ Pg protocol</text>
+  </g>
+</svg>
+  </div>
+
+  <section class="flowcap" id="flowcap"></section>
+  <section class="panel" id="detail">
+    <h2>Click a component</h2>
+    <div class="meta">current scaffold + desired contract</div>
+    <p>Use the flow chips to trace implementation-critical paths. Dashed red nodes are scaffold gaps that should become real code before V2 is treated as runnable.</p>
+    <ul>
+      <li>Start with storage/page contracts before B+Tree and WAL.</li>
+      <li>Keep PostgreSQL wire protocol as an adapter over the same SQL and collection core.</li>
+      <li>Make commit order explicit: WAL durable first, then publish versions and flush pages.</li>
+    </ul>
+  </section>
+</div>
+
+<script>
+const details = {
+  host: ["Host app", "external consumer", "Uses the embedded C# API. This path should stay the simplest and deepest contract: open database, open collection, execute typed CRUD/query calls.", ["Calls Database and Collection directly.", "Should not know SQL, TCP, WAL, pages, or locks.", "Good first acceptance path for V2 CRUD."]],
+  pgclient: ["PostgreSQL client", "external consumer", "Connects through the PostgreSQL wire server so tools like Npgsql can exercise the same database core through SQL.", ["NpgsqlIntegrationTests are the eventual proof.", "Protocol should translate to SQL AST and ResultSet only.", "Do not let protocol code bypass QueryExecutor."]],
+  database: ["Database", "src/SharpDB.V2/Database.cs", "Composition root for V2. It should construct page stores, WAL, schema, transaction manager, context factory, maintenance services, and collection facades.", ["Currently scaffolded with VacuumEngine and BackupEngine fields.", "Owns startup recovery before collections open.", "Dispose should flush buffers, stop group commit, and close file handles."]],
+  collection: ["Collection<T,TKey>", "src/SharpDB.V2/Collection.cs", "Typed facade for collection operations. It should coordinate key extraction, serialization, validation, primary/secondary indexes, and transaction context lifetime.", ["Should expose insert/update/delete/select/scan/range APIs.", "Primary index maps TKey to PageId.", "Secondary indexes are maintained in the same operation context as primary writes."]],
+  server: ["DatabaseServer", "src/SharpDB.V2.Server", "TCP listener around the same V2 database. It should accept clients, create ClientSession objects, and coordinate shutdown.", ["Keep it thin: listener lifecycle only.", "All query semantics belong below protocol handlers.", "Uses DatabaseOptions.Port."]],
+  startup: ["Startup handshake", "PgStartupHandler", "Handles PostgreSQL startup parameters and returns AuthenticationOk, ParameterStatus, BackendKeyData, and ReadyForQuery.", ["No auth initially can be explicit.", "Must set protocol state before query messages.", "Failure maps to ErrorResponseMessage."]],
+  session: ["ClientSession", "Session/ClientSession.cs", "Per-connection loop. It owns the network stream, reader, writer, protocol state, transaction status, and prepared statement cache.", ["Dispatches Query, Parse, Bind, Execute, Sync, Terminate.", "Keeps one active transaction status for ReadyForQuery.", "Shutdown should be cancellation-safe."]],
+  queryhandlers: ["Query handlers", "PgSimpleQueryHandler + PgExtendedQueryHandler", "Translate wire messages into SQL execution requests and write backend messages back to the client.", ["Simple Query: SQL string to ResultSet.", "Extended Query: Parse/Bind/Execute pipeline.", "Should not contain query planning rules."]],
+  lexer: ["Lexer", "SharpDB.V2.Sql/Parsing", "Turns SQL text into Token sequences for SELECT, INSERT, UPDATE, DELETE, joins, predicates, ordering, and limits.", ["Current TokenType already names intended grammar.", "First milestone should cover exact CRUD grammar.", "Lexer tests should be table-driven."]],
+  parser: ["Parser + AST", "SharpDB.V2.Sql/Parsing/Ast", "Builds typed Statement and Expression objects from tokens. This is the boundary between SQL syntax and engine semantics.", ["AST classes are present.", "Parser is not implemented.", "Keep AST immutable enough for planner tests."]],
+  planner: ["QueryPlanner", "SharpDB.V2.Sql/Planning", "Converts Statement trees into executable plans: scan, filter, project, join, limit, and eventually index seek/range plans.", ["Current plan nodes are scaffolded.", "CostEstimator can choose primary/secondary index paths.", "Planner should be independent of protocol."]],
+  executor: ["QueryExecutor", "SharpDB.V2.Sql/Execution", "Runs QueryPlan objects against Database/Collection APIs and returns ResultSet rows for protocol or direct SQL use.", ["Bridge from SQL row model to typed collection storage.", "Needs metadata from SchemaStore.", "Owns expression evaluation."]],
+  context: ["OperationContextFactory", "Engine/Operations", "Creates the per-operation unit of work: transaction, page buffer, read/write mode, cleanup and rollback boundaries.", ["Critical lifetime boundary.", "Read operations can use read-only contexts.", "Write contexts must carry WAL and lock decisions through to flush."]],
+  schema: ["SchemaStore", "Engine/Schema", "Persists collection schema, field metadata, primary key, auto-increment state, and index definitions.", ["Currently all methods throw.", "Must be durable before collection open/create works.", "Use it to map SQL table names to collection definitions."]],
+  constraints: ["Constraint validators", "Engine/Constraints", "Enforces uniqueness, foreign keys, and collection-level rules before index/data mutation becomes visible.", ["CompositeConstraintValidator is the aggregate.", "ForeignKeyValidator should use indexes, not full scans when possible.", "Validation runs inside OperationContext."]],
+  partition: ["PartitionRouter<TKey>", "Engine/Partitioning", "Routes keys to deterministic partitions before index lookup or mutation. This keeps the collection facade stable while storage can later split data/index files by partition.", ["CollectionOptions exposes PartitionCount and an optional strategy.", "HashPartitionStrategy is the first scaffolded strategy.", "Partition descriptors should eventually map to per-partition page stores, indexes, and maintenance scopes."]],
+  serializer: ["BinarySerializer", "Engine/Serialization", "Encodes records into page bytes and decodes them back. The compiled factory is the target for fast typed serialization.", ["Current serializer throws.", "Should use IBufferWriter<byte> and size estimation.", "KeyExtractor should wrap CollectionOptions.KeySelector."]],
+  index: ["B+Tree indexes", "Engine/BTree", "Primary and secondary access methods. UniqueIndex and DuplicateIndex should provide point lookup, cursor scan, range scan, insert, delete, and split handling.", ["Current classes are mostly empty.", "Primary index returns PageId.", "Duplicate index supports multiple PageIds per key for secondary lookup."]],
+  btreepages: ["B+Tree page layout", "Engine/BTree pages", "The physical index shape: a root page routes to internal pages, internal pages route to leaf pages, and leaves hold sorted key-to-PageId entries with sibling links for scans.", ["Insert and delete mutate leaf pages and may split/merge upward.", "Range scans walk leaf sibling links after the first seek.", "This structure backs primary, unique secondary, and duplicate secondary indexes."]],
+  tx: ["TransactionManager", "Engine/Transactions", "Creates transactions and drives commit/rollback ordering. It coordinates locks, MVCC version publication, WAL force, and cleanup.", ["Commit must not publish before WAL durability.", "Rollback must undo uncommitted index/data changes.", "Expose active transactions for checkpoint/recovery."]],
+  lock: ["LockManager", "Engine/Transactions", "Concurrency control with shared, exclusive, update, range shared, and range exclusive modes plus deadlock detection.", ["Current LockTable and DeadlockDetector are empty.", "Serializable requires range locks.", "Victim selection should abort one transaction cleanly."]],
+  version: ["VersionManager", "Engine/Transactions", "MVCC version chains over PageId records. It decides what each reader can see and purges versions older than the oldest active transaction.", ["Current implementation empty.", "Needs snapshot timestamps or transaction IDs.", "Vacuum relies on safe purge boundaries."]],
+  auto: ["AutoIncrementStore", "Engine/Schema", "Allocates persisted identity values per collection. It should reserve blocks to avoid writing metadata for every insert.", ["Current methods throw.", "Should be part of schema durability.", "Rollback should not reuse already-observed IDs unless explicitly designed."]],
+  maintenance: ["VacuumEngine + BackupEngine", "Engine/Vacuum and Engine/Backup", "Maintenance services. Vacuum rewrites live data and indexes; backup creates a consistent copy after flush/checkpoint.", ["BackupEngine is now scaffolded beside VacuumEngine.", "Vacuum must respect MVCC oldest-active boundary.", "Both should run through explicit operation contexts and become partition-aware."]],
+  wal: ["LogWriter", "Engine/Wal", "Durability log writer. It appends operation records, tracks LSN, supports ForceSync, and schedules group commit callbacks.", ["Current methods throw.", "Records should include enough redo/undo data.", "Expose CurrentLsn for page metadata and checkpoints."]],
+  groupcommit: ["GroupCommitQueue", "Engine/Wal", "Batches commit fsync work across transactions to reduce latency while preserving durability ordering.", ["Empty scaffold now.", "Callback every waiting commit up to flushed LSN.", "Needs cancellation/shutdown behavior."]],
+  recovery: ["RecoveryManager", "Engine/Wal", "Startup recovery: find checkpoint, analyze WAL, redo committed changes, undo unfinished changes, then make the page store consistent.", ["Current methods throw.", "Must run before Database opens collections.", "Checkpoint should include dirty page and transaction metadata."]],
+  pagebuffer: ["PageBuffer", "Engine/Storage", "In-memory page cache and dirty page tracker. It should pin active pages, allocate new pages, and flush dirty pages deterministically.", ["Current methods throw.", "This is the base for indexes and record storage.", "Buffer capacity comes from DatabaseOptions.BufferPoolCapacity."]],
+  pagestore: ["PageStore / FilePageStore", "Engine/Storage + Infrastructure/IO", "Physical page storage. Engine owns abstractions; Infrastructure owns filesystem implementation.", ["Both current stores throw.", "Keep RandomAccess/file handling outside engine logic.", "Sync is the final durability boundary after WAL decisions."]],
+  files: ["Data, index, and WAL files", "filesystem", "The durable state: page files for records/indexes, WAL segments, schema metadata, and backup copies.", ["File layout should be documented before implementation.", "Tests need temp directories and crash-recovery fixtures.", "Avoid protocol-specific file formats."]]
+};
+
+const flows = {
+  all: { title: "Everything", edges: [], nodes: [], steps: [] },
+  "embedded-write": {
+    title: "Embedded write flow",
+    edges: ["e-app-db", "e-db-open", "e-db-context", "e-context-schema", "e-context-constraints", "e-context-partition", "e-partition-index", "e-context-tx", "e-tx-lock", "e-tx-version", "e-constraints-index", "e-schema-serializer", "e-index-btree", "e-index-pageid", "e-version-pages", "e-serializer-pages"],
+    nodes: ["host", "database", "collection", "context", "schema", "constraints", "partition", "tx", "lock", "version", "index", "btreepages", "serializer", "pagebuffer", "pagestore"],
+    steps: ["Host calls typed Collection API.", "OperationContext opens a transaction and page buffer.", "Schema, key extraction, constraints, and partition routing validate the record.", "Record bytes are written through serializer/page buffer.", "Partition-local primary and secondary B+Tree entries point to PageId.", "Transaction commit flow makes the mutation durable."]
+  },
+  "sql-select": {
+    title: "SQL SELECT flow",
+    edges: ["e-driver-server", "e-server-startup", "e-startup-session", "e-session-simple", "e-session-extended", "e-sql-lexer", "e-lexer-parser", "e-parser-planner", "e-planner-executor", "e-executor-db", "e-db-open", "e-db-context", "e-context-schema", "e-context-partition", "e-partition-index", "e-schema-serializer", "e-index-btree", "e-index-pageid", "e-serializer-pages"],
+    nodes: ["pgclient", "server", "startup", "session", "queryhandlers", "lexer", "parser", "planner", "executor", "database", "collection", "context", "schema", "partition", "index", "btreepages", "serializer", "pagebuffer"],
+    steps: ["Client sends SQL through simple or extended protocol.", "Protocol handler produces SQL text and delegates downward.", "Lexer and Parser build AST.", "Planner chooses scan/filter/project/join/limit or index path.", "Executor routes predicates to one or more partitions and reads collections.", "Protocol writer emits RowDescription, DataRow, CommandComplete, ReadyForQuery."]
+  },
+  commit: {
+    title: "Commit durability flow",
+    edges: ["e-context-tx", "e-tx-wal", "e-wal-group", "e-group-file", "e-tx-version", "e-index-pageid", "e-buffer-store", "e-store-files"],
+    nodes: ["context", "tx", "wal", "groupcommit", "version", "index", "btreepages", "pagebuffer", "pagestore", "files"],
+    steps: ["Transaction gathers write intents.", "LogWriter appends data and commit records.", "GroupCommitQueue forces WAL up to commit LSN.", "Only after WAL durability are versions published.", "Dirty index/data pages flush through PageStore.", "Locks release and client sees success."]
+  },
+  recovery: {
+    title: "Startup recovery flow",
+    edges: ["e-recovery-wal", "e-recovery-store", "e-checkpoint", "e-store-files"],
+    nodes: ["database", "recovery", "wal", "pagestore", "pagebuffer", "version", "files"],
+    steps: ["Database constructs stores before opening collections.", "RecoveryManager finds the last checkpoint.", "WAL analysis identifies committed and unfinished transactions.", "Redo reapplies committed page/index changes.", "Undo removes unfinished changes.", "Schema and collections open only after consistency is restored."]
+  },
+  maintenance: {
+    title: "Maintenance flow",
+    edges: ["e-context-partition", "e-partition-index", "e-vacuum-index", "e-backup-store", "e-checkpoint", "e-buffer-store", "e-store-files"],
+    nodes: ["maintenance", "context", "partition", "version", "index", "btreepages", "pagebuffer", "pagestore", "wal", "files"],
+    steps: ["Vacuum uses oldest active transaction to decide reclaimable versions.", "Maintenance scopes work per partition so large collections can be processed incrementally.", "Live records are copied and indexes rebuilt.", "Backup first flushes buffers and checkpoints WAL.", "FilePageStore copies a consistent set of data/index/WAL metadata.", "Both paths must be cancellable and observable."]
+  },
+  pg: {
+    title: "PostgreSQL session flow",
+    edges: ["e-driver-server", "e-server-startup", "e-startup-session", "e-session-simple", "e-session-extended", "e-sql-lexer"],
+    nodes: ["pgclient", "server", "startup", "session", "queryhandlers", "lexer", "parser", "planner", "executor"],
+    steps: ["DatabaseServer accepts TcpClient.", "Startup handler completes protocol negotiation.", "ClientSession dispatches messages until Terminate.", "Simple Query sends SQL directly to parser.", "Extended Query caches parse/bind state before execute.", "ReadyForQuery reports idle/in-transaction/error state."]
+  }
+};
+
+function setDetail(key) {
+  const item = details[key];
+  if (!item) return;
+  document.querySelectorAll(".node").forEach(n => n.classList.toggle("sel", n.dataset.k === key));
+  document.getElementById("detail").classList.add("show");
+  document.getElementById("detail").innerHTML = `
+    <h2>${item[0]}</h2>
+    <div class="meta">${item[1]}</div>
+    <p>${item[2]}</p>
+    <ul>${item[3].map(x => `<li>${x}</li>`).join("")}</ul>
+  `;
+}
+
+function setFlow(name) {
+  const flow = flows[name] || flows.all;
+  document.querySelectorAll(".chip").forEach(c => c.classList.toggle("on", c.dataset.flow === name));
+  document.querySelectorAll(".edge,.edge-label,.node").forEach(el => el.classList.remove("lit"));
+  const stage = document.getElementById("stage");
+  const cap = document.getElementById("flowcap");
+  if (name === "all") {
+    stage.classList.remove("flowing");
+    cap.classList.remove("show");
+    return;
+  }
+  stage.classList.add("flowing");
+  flow.edges.forEach(id => {
+    document.getElementById(id)?.classList.add("lit");
+    document.querySelector(`[data-e="${id}"]`)?.classList.add("lit");
+  });
+  flow.nodes.forEach(k => document.querySelector(`.node[data-k="${k}"]`)?.classList.add("lit"));
+  cap.classList.add("show");
+  cap.innerHTML = `<div class="name">${flow.title}</div><ol>${flow.steps.map(step => `<li>${step}</li>`).join("")}</ol>`;
+}
+
+document.querySelectorAll(".node").forEach(node => node.addEventListener("click", () => setDetail(node.dataset.k)));
+document.getElementById("chips").addEventListener("click", event => {
+  const flow = event.target?.dataset?.flow;
+  if (flow) setFlow(flow);
+});
+document.getElementById("themeToggle").addEventListener("click", () => {
+  const html = document.documentElement;
+  html.classList.toggle("dark");
+  localStorage.setItem("sharpdb-v2-theme", html.classList.contains("dark") ? "dark" : "light");
+});
+</script>
+</body>
+</html>
