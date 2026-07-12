@@ -1,5 +1,6 @@
 using System.Buffers;
 using SharpDB.V2.Engine.Abstractions.Serialization;
+using SharpDB.V2.Engine.Schema;
 
 namespace SharpDB.V2.Engine.Serialization;
 
@@ -15,7 +16,17 @@ namespace SharpDB.V2.Engine.Serialization;
 /// </summary>
 public sealed class BinarySerializer<T> : ISerializer<T>
 {
-    private readonly TypePlan<T> _plan = CompiledSerializerFactory.GetOrBuild<T>();
+    private readonly TypePlan<T> _plan;
+
+    public BinarySerializer()
+    {
+        _plan = CompiledSerializerFactory.GetOrBuild<T>();
+    }
+
+    public BinarySerializer(CollectionSchema schema)
+    {
+        _plan = CompiledSerializerFactory.GetOrBuild<T>(schema);
+    }
 
     public void Serialize(T value, IBufferWriter<byte> writer) => _plan.SerializeInto(value, writer);
 

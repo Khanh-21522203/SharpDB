@@ -6,6 +6,7 @@ using System.Buffers.Binary;
 using System.Collections.Generic;
 using System.Linq;
 using FluentAssertions;
+using SharpDB.V2.Engine.Schema;
 using SharpDB.V2.Engine.Serialization;
 using Xunit;
 
@@ -60,6 +61,12 @@ public sealed class BinarySerializerTests
         public int First { get; set; }
         public int Second { get; set; }
         public int Third { get; set; }
+    }
+
+    private sealed class SchemaOrderedRow
+    {
+        public int First { get; set; }
+        public int Second { get; set; }
     }
 
     private sealed class NineNullableIntRow
@@ -129,6 +136,61 @@ public sealed class BinarySerializerTests
         result.DateTimeOffsetValue.Offset.Should().Be(value.DateTimeOffsetValue.Offset);
         result.StringValue.Should().Be(value.StringValue);
         result.ByteArrayValue.Should().Equal(value.ByteArrayValue);
+    }
+
+    [Fact]
+    public void SchemaBoundSerializer_UsesColumnOrder_InsteadOfPropertyDeclarationOrder()
+    {
+        var schema = new CollectionSchema
+        {
+            Name = "ordered",
+            Columns =
+            [
+                new ColumnDefinition { Name = "Second", FieldPath = "Second", TypeName = "Int32" },
+                new ColumnDefinition { Name = "First", FieldPath = "First", TypeName = "Int32" },
+            ],
+        };
+        var serializer = new BinarySerializer<SchemaOrderedRow>(schema);
+        var writer = new ArrayBufferWriter<byte>();
+
+        serializer.Serialize(new SchemaOrderedRow { First = 1, Second = 2 }, writer);
+
+        BinaryPrimitives.ReadInt32LittleEndian(writer.WrittenSpan.Slice(1, 4)).Should().Be(2);
+        BinaryPrimitives.ReadInt32LittleEndian(writer.WrittenSpan.Slice(5, 4)).Should().Be(1);
+    }
+
+    [Fact]
+    public void SchemaBoundSerializer_Throws_WhenColumnPropertyIsMissing()
+    {
+        var schema = new CollectionSchema
+        {
+            Name = "bad",
+            Columns =
+            [
+                new ColumnDefinition { Name = "Missing", FieldPath = "Missing", TypeName = "Int32" },
+            ],
+        };
+
+        var act = () => new BinarySerializer<SchemaOrderedRow>(schema);
+
+        act.Should().Throw<NotSupportedException>().WithMessage("*Missing*");
+    }
+
+    [Fact]
+    public void SchemaBoundSerializer_Throws_WhenColumnTypeDoesNotMatchProperty()
+    {
+        var schema = new CollectionSchema
+        {
+            Name = "bad",
+            Columns =
+            [
+                new ColumnDefinition { Name = "First", FieldPath = "First", TypeName = "Int64" },
+            ],
+        };
+
+        var act = () => new BinarySerializer<SchemaOrderedRow>(schema);
+
+        act.Should().Throw<NotSupportedException>().WithMessage("*Int64*Int32*");
     }
 
     [Theory]

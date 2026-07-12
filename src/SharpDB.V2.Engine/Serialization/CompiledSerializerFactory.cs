@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Linq.Expressions;
 using System.Reflection;
+using SharpDB.V2.Engine.Schema;
 
 namespace SharpDB.V2.Engine.Serialization;
 
@@ -38,6 +39,7 @@ internal sealed class TypePlan<T>
 internal static class CompiledSerializerFactory
 {
     private static readonly ConcurrentDictionary<Type, Lazy<object>> Cache = new();
+    private static readonly ConcurrentDictionary<(Type Type, string Signature), Lazy<object>> SchemaCache = new();
 
     public static TypePlan<T> GetOrBuild<T>()
     {
@@ -46,6 +48,16 @@ internal static class CompiledSerializerFactory
         // a permanently-unsupported T (verified: LazyThreadSafetyMode.None/ExecutionAndPublication
         // both cache; only PublicationOnly retries the factory after a failure).
         var lazy = Cache.GetOrAdd(typeof(T), static _ => new Lazy<object>(BuildPlan<T>, LazyThreadSafetyMode.ExecutionAndPublication));
+        return (TypePlan<T>)lazy.Value;
+    }
+
+    public static TypePlan<T> GetOrBuild<T>(CollectionSchema schema)
+    {
+        var signature = SchemaSignature(schema);
+        var key = (typeof(T), signature);
+        var lazy = SchemaCache.GetOrAdd(
+            key,
+            _ => new Lazy<object>(() => BuildPlan<T>(schema), LazyThreadSafetyMode.ExecutionAndPublication));
         return (TypePlan<T>)lazy.Value;
     }
 
@@ -62,12 +74,60 @@ internal static class CompiledSerializerFactory
             .OrderBy(p => p.MetadataToken)
             .ToArray();
 
+        return BuildPlan<T>(properties, ctor);
+    }
+
+    private static TypePlan<T> BuildPlan<T>(CollectionSchema schema)
+    {
+        var type = typeof(T);
+        var ctor = type.GetConstructor(Type.EmptyTypes)
+            ?? throw new NotSupportedException(
+                $"Type '{type.Name}' has no accessible parameterless constructor; BinarySerializer<T> requires one to materialize instances during deserialization.");
+
+        var propertiesByName = type
+            .GetProperties(BindingFlags.Public | BindingFlags.Instance)
+            .Where(p => p.CanRead && p.CanWrite && p.GetIndexParameters().Length == 0)
+            .ToDictionary(p => p.Name, StringComparer.Ordinal);
+
+        if (schema.Columns.Count == 0)
+        {
+            throw new NotSupportedException(
+                $"Collection schema '{schema.Name}' has no columns; schema-bound BinarySerializer<T> requires a durable column list.");
+        }
+
+        SchemaValidator.Validate(schema);
+
+        var properties = new PropertyInfo[schema.Columns.Count];
+        for (var i = 0; i < schema.Columns.Count; i++)
+        {
+            var column = schema.Columns[i];
+            var fieldPath = string.IsNullOrWhiteSpace(column.FieldPath) ? column.Name : column.FieldPath;
+            if (!propertiesByName.TryGetValue(fieldPath, out var property))
+            {
+                throw new NotSupportedException(
+                    $"Column '{column.Name}' maps to '{type.Name}.{fieldPath}', but that public read-write property was not found.");
+            }
+
+            var kind = ClassifyKind(property.PropertyType)
+                ?? throw new NotSupportedException(
+                    $"Property '{type.Name}.{property.Name}' of type '{property.PropertyType}' is not supported by BinarySerializer<T>. " +
+                    "Supported types: int, long, double, bool, decimal, Guid, DateTime, DateTimeOffset, string, byte[], and their Nullable<T> counterparts.");
+
+            ValidateColumnMatchesProperty(type, column, property, kind);
+            properties[i] = property;
+        }
+
+        return BuildPlan<T>(properties, ctor);
+    }
+
+    private static TypePlan<T> BuildPlan<T>(PropertyInfo[] properties, ConstructorInfo ctor)
+    {
         var kinds = new FieldKind[properties.Length];
         for (var i = 0; i < properties.Length; i++)
         {
             kinds[i] = ClassifyKind(properties[i].PropertyType)
                 ?? throw new NotSupportedException(
-                    $"Property '{type.Name}.{properties[i].Name}' of type '{properties[i].PropertyType}' is not supported by BinarySerializer<T>. " +
+                    $"Property '{typeof(T).Name}.{properties[i].Name}' of type '{properties[i].PropertyType}' is not supported by BinarySerializer<T>. " +
                     "Supported types: int, long, double, bool, decimal, Guid, DateTime, DateTimeOffset, string, byte[], and their Nullable<T> counterparts.");
         }
 
@@ -100,6 +160,56 @@ internal static class CompiledSerializerFactory
             Read = BuildRead<T>(properties, kinds, presenceBitIndex, maskByteCount, presenceBearingCount, ctor)
         };
     }
+
+    private static string SchemaSignature(CollectionSchema schema)
+    {
+        var columns = string.Join(
+            "|",
+            schema.Columns.Select(c =>
+                $"{c.Name}:{c.FieldPath}:{c.TypeName}:{c.IsNullable}:{c.IsPrimaryKey}"));
+        return $"{schema.Name}:{schema.SchemaVersion}:{schema.PrimaryKeyFieldPath}:{columns}";
+    }
+
+    private static void ValidateColumnMatchesProperty(
+        Type rowType,
+        ColumnDefinition column,
+        PropertyInfo property,
+        FieldKind kind)
+    {
+        if (!string.IsNullOrWhiteSpace(column.TypeName) &&
+            !string.Equals(column.TypeName, CanonicalTypeName(kind), StringComparison.Ordinal))
+        {
+            throw new NotSupportedException(
+                $"Column '{column.Name}' declares type '{column.TypeName}', but '{rowType.Name}.{property.Name}' is '{CanonicalTypeName(kind)}'.");
+        }
+
+        if (IsNullableValueKind(kind) && !column.IsNullable)
+        {
+            throw new NotSupportedException(
+                $"Column '{column.Name}' is non-nullable, but '{rowType.Name}.{property.Name}' is Nullable<T>.");
+        }
+
+        if (!IsNullableValueKind(kind) && !IsReferenceKind(kind) && column.IsNullable)
+        {
+            throw new NotSupportedException(
+                $"Column '{column.Name}' is nullable, but '{rowType.Name}.{property.Name}' is a non-nullable value type.");
+        }
+    }
+
+    private static string CanonicalTypeName(FieldKind kind) => kind switch
+    {
+        FieldKind.Int32 or FieldKind.NullableInt32 => "Int32",
+        FieldKind.Int64 or FieldKind.NullableInt64 => "Int64",
+        FieldKind.Double or FieldKind.NullableDouble => "Double",
+        FieldKind.Boolean or FieldKind.NullableBoolean => "Boolean",
+        FieldKind.Decimal or FieldKind.NullableDecimal => "Decimal",
+        FieldKind.Guid or FieldKind.NullableGuid => "Guid",
+        FieldKind.DateTime or FieldKind.NullableDateTime => "DateTime",
+        FieldKind.DateTimeOffset or FieldKind.NullableDateTimeOffset => "DateTimeOffset",
+        FieldKind.String => "String",
+        FieldKind.ByteArray => "ByteArray",
+        _ => throw new ArgumentOutOfRangeException(nameof(kind), kind, null)
+    };
 
     private static FieldKind? ClassifyKind(Type propertyType)
     {
