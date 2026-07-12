@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+  <ItemGroup>
+    <ProjectReference Include="..\SharpDB.V2.Engine\SharpDB.V2.Engine.csproj" />
+    <ProjectReference Include="..\SharpDB.V2.Infrastructure\SharpDB.V2.Infrastructure.csproj" />
+  </ItemGroup>
+</Project>

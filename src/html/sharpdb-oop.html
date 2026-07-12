@@ -1,0 +1,938 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SharpDB V2 — OOP Design</title>
+<script>
+(function(){var s=localStorage.getItem('theme');var d=s?s==='dark':matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',d);document.documentElement.setAttribute('data-theme',d?'dark':'light');})();
+</script>
+<style>
+:root{
+  --bg:#F6F8FB;--surface:#FFFFFF;--surface2:#EDF1F7;
+  --ink:#0F172A;--body:#334155;--muted:#64748B;
+  --line:#CBD5E1;--line-soft:#E2E8F0;
+  --clay:#0D9488;--clay-soft:rgba(13,148,136,0.10);
+  --olive:#7C3AED;--olive-soft:rgba(124,58,237,0.10);
+  --gold:#D97706;--blue:#3B82F6;
+  --zone:rgba(15,23,42,0.025);--zone-line:#CBD5E1;
+  --serif:ui-serif,Georgia,"Times New Roman",serif;
+  --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+}
+:root[data-theme="light"]{--bg:#F6F8FB;--surface:#FFFFFF;--surface2:#EDF1F7;--ink:#0F172A;--body:#334155;--muted:#64748B;--line:#CBD5E1;--line-soft:#E2E8F0;--clay:#0D9488;--clay-soft:rgba(13,148,136,0.10);--olive:#7C3AED;--olive-soft:rgba(124,58,237,0.10);--gold:#D97706;--blue:#3B82F6;--zone:rgba(15,23,42,0.025);--zone-line:#CBD5E1;}
+html.dark,:root[data-theme="dark"]{--bg:#080D17;--surface:#111827;--surface2:#1A2438;--ink:#F1F5F9;--body:#CBD5E1;--muted:#64748B;--line:#1E2D42;--line-soft:#111827;--clay:#2DD4BF;--clay-soft:rgba(45,212,191,0.12);--olive:#A78BFA;--olive-soft:rgba(167,139,250,0.12);--gold:#FCD34D;--blue:#60A5FA;--zone:rgba(241,245,249,0.03);--zone-line:#1E2D42;}
+*{box-sizing:border-box;margin:0;padding:0;}
+html,body{height:100%;}
+body{background:var(--bg);color:var(--body);font-family:var(--sans);-webkit-font-smoothing:antialiased;display:flex;flex-direction:column;overflow:hidden;}
+.bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 20px;border-bottom:1px solid var(--line-soft);flex:none;}
+.bar h1{font-family:var(--serif);font-weight:500;font-size:18px;color:var(--ink);letter-spacing:-0.01em;}
+.bar .sub{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.06em;text-transform:uppercase;}
+.spacer{flex:1;}
+.chips{display:flex;gap:6px;flex-wrap:wrap;}
+.chip{font-family:var(--mono);font-size:11px;letter-spacing:0.04em;padding:4px 10px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s ease;}
+.chip:hover{color:var(--ink);border-color:var(--muted);}
+.chip.on{background:var(--ink);border-color:var(--ink);color:var(--bg);}
+#themeToggle{font-family:var(--mono);font-size:10px;text-transform:uppercase;letter-spacing:0.08em;padding:4px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;}
+#themeToggle:hover{color:var(--ink);border-color:var(--muted);}
+.stage{flex:1;position:relative;min-height:0;overflow:hidden;}
+.tab-svg{position:absolute;inset:0;width:100%;height:100%;display:none;}
+.tab-svg.active{display:block;}
+
+/* UML node base */
+.un{cursor:default;}
+.un rect{fill:var(--surface);stroke:var(--line);stroke-width:1.4;transition:stroke .12s;}
+.un:hover rect{stroke:var(--clay);stroke-width:1.8;}
+.un.iface rect{fill:var(--clay-soft);stroke:var(--clay);}
+.un.infra rect{fill:var(--olive-soft);stroke:var(--olive);}
+.un.vtype rect{fill:var(--surface2);stroke:var(--line);stroke-dasharray:5 3;}
+.un.v1 rect{fill:var(--surface2);stroke:var(--gold);}
+/* text */
+.stereo{font-family:var(--mono);font-size:9px;fill:var(--clay);pointer-events:none;font-style:italic;}
+.stereo-o{font-family:var(--mono);font-size:9px;fill:var(--olive);pointer-events:none;font-style:italic;}
+.stereo-g{font-family:var(--mono);font-size:9px;fill:var(--gold);pointer-events:none;}
+.uname{font-family:var(--sans);font-size:12px;font-weight:700;fill:var(--ink);pointer-events:none;}
+.member{font-family:var(--mono);font-size:9.5px;fill:var(--body);pointer-events:none;}
+.prop{font-family:var(--mono);font-size:9.5px;fill:var(--blue);pointer-events:none;}
+.dv{stroke:var(--line);stroke-width:1;}
+/* zones */
+.zbg{fill:var(--zone);stroke:var(--zone-line);stroke-width:1;stroke-dasharray:4 4;}
+.zlbl{font-family:var(--mono);font-size:9.5px;letter-spacing:0.09em;text-transform:uppercase;fill:var(--muted);}
+/* relationships */
+.rx{stroke:var(--body);stroke-width:1.4;fill:none;marker-end:url(#m-ext);}
+.ri{stroke:var(--clay);stroke-width:1.3;fill:none;stroke-dasharray:6 4;marker-end:url(#m-impl);}
+.rd{stroke:var(--muted);stroke-width:1.1;fill:none;stroke-dasharray:3 3;marker-end:url(#m-dep);}
+.rl{font-family:var(--mono);font-size:9px;fill:var(--muted);}
+/* legend */
+.lgnd text{font-family:var(--mono);font-size:9px;fill:var(--muted);}
+
+@media(max-width:800px){body{overflow:auto;}.stage{min-height:70vh;}}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div><h1>SharpDB V2 — OOP Design</h1><div class="sub">interfaces · implementations · relationships</div></div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-tab="index">Index</button>
+    <button class="chip" data-tab="storage">Storage</button>
+    <button class="chip" data-tab="txn">Transactions</button>
+    <button class="chip" data-tab="wal">WAL + Schema</button>
+    <button class="chip" data-tab="api">Public API</button>
+  </div>
+  <button id="themeToggle">Theme</button>
+</div>
+
+<!-- shared SVG defs (markers) -->
+<svg style="position:absolute;width:0;height:0;overflow:hidden" aria-hidden="true">
+  <defs>
+    <marker id="m-ext" viewBox="0 0 14 12" refX="13" refY="6" markerWidth="9" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L13,6 L0,12 Z" style="fill:var(--surface);stroke:var(--body);stroke-width:1.5;"/>
+    </marker>
+    <marker id="m-impl" viewBox="0 0 14 12" refX="13" refY="6" markerWidth="9" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L13,6 L0,12 Z" style="fill:var(--clay-soft);stroke:var(--clay);stroke-width:1.5;"/>
+    </marker>
+    <marker id="m-dep" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L9,5 L0,10" style="fill:none;stroke:var(--muted);stroke-width:1.5;"/>
+    </marker>
+    <pattern id="oogrid" width="32" height="32" patternUnits="userSpaceOnUse">
+      <path d="M 32 0 L 0 0 0 32" fill="none" stroke="var(--zone-line)" stroke-width="0.4"/>
+    </pattern>
+  </defs>
+</svg>
+
+<div class="stage" id="stage">
+
+<!-- ════════════════════════════════════════════════════════════════
+     TAB 1 — INDEX SUBSYSTEM
+     ════════════════════════════════════════════════════════════════ -->
+<svg id="tab-index" class="tab-svg active" viewBox="0 0 1560 800" preserveAspectRatio="xMidYMin meet">
+<rect width="1560" height="800" fill="url(#oogrid)"/>
+
+<!-- zone: interface hierarchy -->
+<rect class="zbg" x="30" y="10" width="1010" height="580" rx="12"/>
+<text class="zlbl" x="50" y="30">Index Interface Hierarchy</text>
+
+<!-- zone: cursor -->
+<rect class="zbg" x="1060" y="10" width="480" height="380" rx="12"/>
+<text class="zlbl" x="1080" y="30">Cursor</text>
+
+<!-- zone: V1 implementations -->
+<rect class="zbg" x="30" y="610" width="1010" height="175" rx="12"/>
+<text class="zlbl" x="50" y="630">V1 Concrete Implementations (BPlusTree)</text>
+
+<!-- ── IIndex<TKey> ── x=410 y=40 w=450 h=148 -->
+<g class="un iface">
+  <rect x="410" y="40" width="450" height="148" rx="8"/>
+  <line class="dv" x1="410" y1="84" x2="860" y2="84"/>
+  <text class="stereo" x="635" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="635" y="76" text-anchor="middle">IIndex&lt;TKey&gt;</text>
+  <text class="prop"   x="426" y="102">+ Name : string</text>
+  <text class="member" x="426" y="117">+ ContainsKey(key, ctx) : bool</text>
+  <text class="member" x="426" y="132">+ OpenCursor(ctx) : IIndexCursor&lt;TKey,PageId&gt;</text>
+  <text class="member" x="426" y="147">+ Insert(key, value, ctx) / Delete(key, value, ctx)</text>
+</g>
+
+<!-- ── IUniqueIndex<TKey> ── x=60 y=270 w=440 h=115 -->
+<g class="un iface">
+  <rect x="60" y="270" width="440" height="115" rx="8"/>
+  <line class="dv" x1="60" y1="314" x2="500" y2="314"/>
+  <text class="stereo" x="280" y="288" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="280" y="306" text-anchor="middle">IUniqueIndex&lt;TKey&gt;</text>
+  <text class="member" x="76" y="332">extends IIndex&lt;TKey&gt;</text>
+  <text class="member" x="76" y="348">+ TryGet(key, out value, ctx) : bool</text>
+  <text class="member" x="76" y="364">+ Upsert(key, value, ctx) : void</text>
+</g>
+
+<!-- ── IDuplicateIndex<TKey> ── x=580 y=270 w=440 h=115 -->
+<g class="un iface">
+  <rect x="580" y="270" width="440" height="115" rx="8"/>
+  <line class="dv" x1="580" y1="314" x2="1020" y2="314"/>
+  <text class="stereo" x="800" y="288" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="800" y="306" text-anchor="middle">IDuplicateIndex&lt;TKey&gt;</text>
+  <text class="member" x="596" y="332">extends IIndex&lt;TKey&gt;</text>
+  <text class="member" x="596" y="348">+ OpenRangeCursor(from, to, ctx)</text>
+  <text class="member" x="596" y="364">+ CountDuplicates(key, ctx) : int</text>
+</g>
+
+<!-- extends arrows (hollow triangle at parent) -->
+<path class="rx" d="M280,270 C280,205 635,205 635,188"/>
+<path class="rx" d="M800,270 C800,205 635,205 635,188"/>
+<text class="rl" x="370" y="222">extends</text>
+<text class="rl" x="720" y="222">extends</text>
+
+<!-- ── UniqueIndex<TKey> (V2 stub) ── x=60 y=460 w=400 h=115 -->
+<g class="un">
+  <rect x="60" y="460" width="400" height="115" rx="8"/>
+  <line class="dv" x1="60" y1="500" x2="460" y2="500"/>
+  <text class="uname"  x="260" y="484" text-anchor="middle">UniqueIndex&lt;TKey&gt;</text>
+  <text class="member" x="76" y="518">implements IUniqueIndex&lt;TKey&gt;</text>
+  <text class="member" x="76" y="533">TryGet / Insert / Delete / Upsert</text>
+  <text class="member" x="76" y="548">— V2 scaffold (NotImplementedException) —</text>
+  <text class="member" x="76" y="563">see BPlusTreeIndexManager for V1 impl</text>
+</g>
+
+<!-- ── DuplicateIndex<TKey> (V2 stub) ── x=570 y=460 w=410 h=115 -->
+<g class="un">
+  <rect x="570" y="460" width="410" height="115" rx="8"/>
+  <line class="dv" x1="570" y1="500" x2="980" y2="500"/>
+  <text class="uname"  x="775" y="484" text-anchor="middle">DuplicateIndex&lt;TKey&gt;</text>
+  <text class="member" x="586" y="518">implements IDuplicateIndex&lt;TKey&gt;</text>
+  <text class="member" x="586" y="533">OpenRangeCursor / CountDuplicates</text>
+  <text class="member" x="586" y="548">— V2 scaffold (NotImplementedException) —</text>
+  <text class="member" x="586" y="563">see DuplicateBPlusTreeIndexManager (V1)</text>
+</g>
+
+<!-- implements arrows (dashed hollow triangle) -->
+<path class="ri" d="M260,460 C260,405 280,405 280,385"/>
+<path class="ri" d="M775,460 C775,405 800,405 800,385"/>
+<text class="rl" x="188" y="428">implements</text>
+<text class="rl" x="700" y="428">implements</text>
+
+<!-- ── V1: BPlusTreeIndexManager<TK,TV> ── x=50 y=650 w=560 h=120 -->
+<g class="un v1">
+  <rect x="50" y="650" width="560" height="120" rx="8"/>
+  <line class="dv" x1="50" y1="690" x2="610" y2="690"/>
+  <text class="stereo-g" x="330" y="668" text-anchor="middle">«V1 · concrete»</text>
+  <text class="uname"    x="330" y="682" text-anchor="middle">BPlusTreeIndexManager&lt;TK, TV&gt;</text>
+  <text class="prop"   x="66" y="708">- _session : BufferedIndexIOSession&lt;TK&gt;</text>
+  <text class="member" x="66" y="723">- _factory : BPlusTreeNodeFactory&lt;TK,TV&gt;</text>
+  <text class="member" x="66" y="738">- _gate : AsyncReaderWriterLock</text>
+  <text class="member" x="66" y="753">+ PutAsync / GetAsync / DeleteAsync / RangeAsync</text>
+</g>
+
+<!-- ── V1: BufferedIndexIOSession ── x=640 y=650 w=380 h=120 -->
+<g class="un v1">
+  <rect x="640" y="650" width="380" height="120" rx="8"/>
+  <line class="dv" x1="640" y1="690" x2="1020" y2="690"/>
+  <text class="stereo-g" x="830" y="668" text-anchor="middle">«V1 · concrete»</text>
+  <text class="uname"    x="830" y="682" text-anchor="middle">BufferedIndexIOSession&lt;TK&gt;</text>
+  <text class="member" x="656" y="708">- _dirtyCache : Dict&lt;Pointer,TreeNode&gt;</text>
+  <text class="member" x="656" y="723">- _readCache : LruCache&lt;Pointer,TreeNode&gt;</text>
+  <text class="member" x="656" y="738">- _nextTempPtr : long (negative, temp)</text>
+  <text class="member" x="656" y="753">+ FlushAsync() — patch temp→real pointers</text>
+</g>
+
+<!-- ── IIndexCursor<TKey,TValue> ── x=1080 y=40 w=450 h=163 -->
+<g class="un iface">
+  <rect x="1080" y="40" width="450" height="163" rx="8"/>
+  <line class="dv" x1="1080" y1="84" x2="1530" y2="84"/>
+  <text class="stereo" x="1305" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1305" y="76" text-anchor="middle">IIndexCursor&lt;TKey, TValue&gt;</text>
+  <text class="prop"   x="1096" y="102">+ CurrentKey : TKey</text>
+  <text class="prop"   x="1096" y="117">+ CurrentValue : TValue</text>
+  <text class="member" x="1096" y="132">+ MoveNext() : bool / MovePrev() : bool</text>
+  <text class="member" x="1096" y="147">+ SeekTo(key : TKey)</text>
+  <text class="member" x="1096" y="162">+ SeekToFirst() / SeekToLast()</text>
+  <text class="member" x="1096" y="177">implements IDisposable</text>
+</g>
+
+<!-- ── IndexCursor<TKey,TValue> ── x=1090 y=290 w=430 h=95 -->
+<g class="un">
+  <rect x="1090" y="290" width="430" height="95" rx="8"/>
+  <line class="dv" x1="1090" y1="326" x2="1520" y2="326"/>
+  <text class="uname"  x="1305" y="312" text-anchor="middle">IndexCursor&lt;TKey, TValue&gt;</text>
+  <text class="member" x="1106" y="344">implements IIndexCursor&lt;TKey,TValue&gt;</text>
+  <text class="member" x="1106" y="359">Bidirectional · SeekTo binary-searches the leaf</text>
+  <text class="member" x="1106" y="374">— V2 scaffold —</text>
+</g>
+
+<!-- impl arrow: IndexCursor → IIndexCursor -->
+<path class="ri" d="M1305,290 L1305,203"/>
+<text class="rl" x="1312" y="250">implements</text>
+
+<!-- Legend -->
+<g class="lgnd" transform="translate(1080,420)">
+  <rect x="0" y="0" width="450" height="155" rx="8" style="fill:var(--surface);stroke:var(--line);stroke-width:1;"/>
+  <text x="16" y="22" style="font-family:var(--mono);font-size:10px;fill:var(--muted);font-weight:600;">LEGEND</text>
+  <rect x="16" y="34" width="28" height="16" rx="3" style="fill:var(--clay-soft);stroke:var(--clay);stroke-width:1.2;"/>
+  <text x="52" y="46">«interface»  — teal border, teal fill</text>
+  <rect x="16" y="58" width="28" height="16" rx="3" style="fill:var(--surface);stroke:var(--line);stroke-width:1.2;"/>
+  <text x="52" y="70">class  — neutral border</text>
+  <rect x="16" y="82" width="28" height="16" rx="3" style="fill:var(--surface2);stroke:var(--gold);stroke-width:1.2;"/>
+  <text x="52" y="94">«V1 · concrete»  — gold border (V1 codebase)</text>
+  <rect x="16" y="106" width="28" height="16" rx="3" style="fill:var(--olive-soft);stroke:var(--olive);stroke-width:1.2;"/>
+  <text x="52" y="118">«infrastructure»  — violet border</text>
+  <line x1="16" y1="136" x2="54" y2="136" style="stroke:var(--body);stroke-width:1.4;" marker-end="url(#m-ext)"/>
+  <text x="62" y="140">extends (inheritance)</text>
+  <line x1="220" y1="136" x2="258" y2="136" style="stroke:var(--clay);stroke-width:1.3;stroke-dasharray:6 4;" marker-end="url(#m-impl)"/>
+  <text x="266" y="140">implements (realization)</text>
+</g>
+</svg>
+
+
+<!-- ════════════════════════════════════════════════════════════════
+     TAB 2 — STORAGE + PAGES
+     ════════════════════════════════════════════════════════════════ -->
+<svg id="tab-storage" class="tab-svg" viewBox="0 0 1560 800" preserveAspectRatio="xMidYMin meet">
+<rect width="1560" height="800" fill="url(#oogrid)"/>
+
+<!-- zone: interfaces -->
+<rect class="zbg" x="30" y="10" width="1500" height="200" rx="12"/>
+<text class="zlbl" x="50" y="30">Storage Interfaces  (SharpDB.V2.Engine)</text>
+
+<!-- zone: implementations -->
+<rect class="zbg" x="30" y="230" width="1500" height="200" rx="12"/>
+<text class="zlbl" x="50" y="250">Implementations</text>
+
+<!-- ── IPage ── x=60 y=40 w=380 h=155 -->
+<g class="un iface">
+  <rect x="60" y="40" width="380" height="155" rx="8"/>
+  <line class="dv" x1="60" y1="84" x2="440" y2="84"/>
+  <text class="stereo" x="250" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="250" y="76" text-anchor="middle">IPage</text>
+  <text class="prop"   x="76" y="102">+ Id : PageId</text>
+  <text class="prop"   x="76" y="117">+ Data : ReadOnlySpan&lt;byte&gt;</text>
+  <text class="prop"   x="76" y="132">+ IsDirty : bool</text>
+  <text class="member" x="76" y="147">+ GetWritableData() : Span&lt;byte&gt;</text>
+  <text class="member" x="76" y="162">+ MarkDirty() : void</text>
+</g>
+
+<!-- ── IPageBuffer ── x=500 y=40 w=460 h=170 -->
+<g class="un iface">
+  <rect x="500" y="40" width="460" height="170" rx="8"/>
+  <line class="dv" x1="500" y1="84" x2="960" y2="84"/>
+  <text class="stereo" x="730" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="730" y="76" text-anchor="middle">IPageBuffer  :  IDisposable</text>
+  <text class="member" x="516" y="102">+ Get(id : PageId) : IPage</text>
+  <text class="member" x="516" y="117">+ Allocate() : IPage</text>
+  <text class="member" x="516" y="132">+ Pin(id) / Unpin(id) : void</text>
+  <text class="member" x="516" y="147">+ FlushDirty() : void</text>
+  <text class="member" x="516" y="162">— LRU eviction · buffer-pool pinning semantics —</text>
+  <text class="member" x="516" y="177">— capacity set at OpenBuffer(capacity) —</text>
+</g>
+
+<!-- ── IPageStore ── x=1030 y=40 w=460 h=155 -->
+<g class="un iface">
+  <rect x="1030" y="40" width="460" height="155" rx="8"/>
+  <line class="dv" x1="1030" y1="84" x2="1490" y2="84"/>
+  <text class="stereo" x="1260" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1260" y="76" text-anchor="middle">IPageStore  :  IDisposable</text>
+  <text class="prop"   x="1046" y="102">+ PageCount : long</text>
+  <text class="member" x="1046" y="117">+ OpenBuffer(capacity : int) : IPageBuffer</text>
+  <text class="member" x="1046" y="132">+ Sync() : void</text>
+  <text class="member" x="1046" y="147">— implemented by Infrastructure layer —</text>
+  <text class="member" x="1046" y="162">— never referenced directly in Engine —</text>
+</g>
+
+<!-- dep arrows between interfaces -->
+<path class="rd" d="M500,112 L440,112"/>
+<text class="rl" x="452" y="107">uses</text>
+<path class="rd" d="M1030,95 L960,95"/>
+<text class="rl" x="968" y="90">creates</text>
+
+<!-- ── Page (impl) ── x=60 y=250 w=380 h=140 -->
+<g class="un">
+  <rect x="60" y="250" width="380" height="140" rx="8"/>
+  <line class="dv" x1="60" y1="286" x2="440" y2="286"/>
+  <text class="uname"  x="250" y="272" text-anchor="middle">Page</text>
+  <text class="prop"   x="76" y="304">- _data : byte[] (16 KB fixed)</text>
+  <text class="prop"   x="76" y="319">- _isDirty : bool</text>
+  <text class="member" x="76" y="334">Data → new ReadOnlySpan(_data)</text>
+  <text class="member" x="76" y="349">GetWritableData() → new Span(_data)</text>
+  <text class="member" x="76" y="364">MarkDirty() → _isDirty = true</text>
+  <text class="member" x="76" y="379">V2 scaffold · V1 Page has UsedSpace, Objects[]</text>
+</g>
+
+<!-- ── PageBuffer (impl) ── x=500 y=250 w=460 h=155 -->
+<g class="un">
+  <rect x="500" y="250" width="460" height="155" rx="8"/>
+  <line class="dv" x1="500" y1="286" x2="960" y2="286"/>
+  <text class="uname"  x="730" y="272" text-anchor="middle">PageBuffer</text>
+  <text class="prop"   x="516" y="304">- _store : IPageStore</text>
+  <text class="prop"   x="516" y="319">- _pages : Dictionary&lt;PageId, Page&gt; (LRU)</text>
+  <text class="prop"   x="516" y="334">- _pinnedPages : HashSet&lt;PageId&gt;</text>
+  <text class="member" x="516" y="349">Get → cache lookup → store.Read on miss</text>
+  <text class="member" x="516" y="364">FlushDirty → write all dirty unpinned pages</text>
+  <text class="member" x="516" y="379">— V2 scaffold —</text>
+</g>
+
+<!-- ── FilePageStore (Infrastructure impl) ── x=1030 y=250 w=460 h=140 -->
+<g class="un infra">
+  <rect x="1030" y="250" width="460" height="140" rx="8"/>
+  <line class="dv" x1="1030" y1="286" x2="1490" y2="286"/>
+  <text class="stereo-o" x="1260" y="268" text-anchor="middle">«infrastructure»</text>
+  <text class="uname"    x="1260" y="280" text-anchor="middle">FilePageStore</text>
+  <text class="prop"   x="1046" y="304">- _path : string</text>
+  <text class="prop"   x="1046" y="319">- _handle : SafeFileHandle</text>
+  <text class="member" x="1046" y="334">RandomAccess.ReadAsync — no stream lock</text>
+  <text class="member" x="1046" y="349">Sync() → FlushFileBuffers(handle)</text>
+  <text class="member" x="1046" y="364">Implements IPageStore — DI boundary</text>
+  <text class="member" x="1046" y="379">FilePageStore(string path)</text>
+</g>
+
+<!-- impl arrows -->
+<path class="ri" d="M250,250 L250,195"/>
+<path class="ri" d="M730,250 L730,210"/>
+<path class="ri" d="M1260,250 L1260,195"/>
+<text class="rl" x="186" y="225">implements</text>
+<text class="rl" x="738" y="232">implements</text>
+<text class="rl" x="1268" y="225">implements</text>
+
+<!-- ── Value types row ── -->
+<!-- PageId -->
+<g class="un vtype">
+  <rect x="60" y="445" width="220" height="80" rx="8"/>
+  <line class="dv" x1="60" y1="481" x2="280" y2="481"/>
+  <text class="uname"  x="170" y="467" text-anchor="middle">PageId</text>
+  <text class="member" x="76" y="499">record struct(long Value)</text>
+  <text class="member" x="76" y="514">IComparable · implicit from long</text>
+</g>
+<!-- OperationContextId -->
+<g class="un vtype">
+  <rect x="300" y="445" width="280" height="80" rx="8"/>
+  <line class="dv" x1="300" y1="481" x2="580" y2="481"/>
+  <text class="uname"  x="440" y="467" text-anchor="middle">OperationContextId</text>
+  <text class="member" x="316" y="499">record struct(Guid Value)</text>
+  <text class="member" x="316" y="514">unique per IOperationContext</text>
+</g>
+<!-- PageAllocator note -->
+<g class="un">
+  <rect x="620" y="445" width="400" height="95" rx="8"/>
+  <line class="dv" x1="620" y1="473" x2="1020" y2="473"/>
+  <text class="uname"  x="820" y="463" text-anchor="middle">PageAllocator</text>
+  <text class="member" x="636" y="489">Manages free-page lists within a IPageStore</text>
+  <text class="member" x="636" y="504">Allocate() → pop from free list or extend file</text>
+  <text class="member" x="636" y="519">Free(pageId) → push to free list</text>
+  <text class="member" x="636" y="534">— V2 scaffold —</text>
+</g>
+<!-- V1 page layout note -->
+<g class="un v1">
+  <rect x="1060" y="445" width="440" height="130" rx="8"/>
+  <line class="dv" x1="1060" y1="473" x2="1500" y2="473"/>
+  <text class="stereo-g" x="1280" y="461" text-anchor="middle">«V1 · Page layout»</text>
+  <text class="member" x="1076" y="489">Page: PageNumber, UsedSpace, CollectionId</text>
+  <text class="member" x="1076" y="504">DBObject: Alive, SchemeId, Version, DataOffset</text>
+  <text class="member" x="1076" y="519">Pointer: Type(Data=0x01/Node=0x02), Position, Chunk</text>
+  <text class="member" x="1076" y="534">IsTemporary() → Position &lt; 0 (pre-flush temp nodes)</text>
+  <text class="member" x="1076" y="549">LruCache&lt;Pointer,Page&gt; in PageManager</text>
+  <text class="member" x="1076" y="564">RandomAccess.ReadAsync — 8-page prefetch</text>
+</g>
+</svg>
+
+
+<!-- ════════════════════════════════════════════════════════════════
+     TAB 3 — TRANSACTIONS + MVCC
+     ════════════════════════════════════════════════════════════════ -->
+<svg id="tab-txn" class="tab-svg" viewBox="0 0 1560 800" preserveAspectRatio="xMidYMin meet">
+<rect width="1560" height="800" fill="url(#oogrid)"/>
+
+<!-- zones -->
+<rect class="zbg" x="30" y="10" width="1500" height="195" rx="12"/>
+<text class="zlbl" x="50" y="30">Transaction Interfaces  (SharpDB.V2.Engine)</text>
+<rect class="zbg" x="30" y="225" width="1500" height="185" rx="12"/>
+<text class="zlbl" x="50" y="244">Implementations  (V2 scaffold · V1 fully implemented)</text>
+<rect class="zbg" x="30" y="430" width="1500" height="130" rx="12"/>
+<text class="zlbl" x="50" y="449">Value Types + Enums</text>
+<rect class="zbg" x="30" y="580" width="1500" height="200" rx="12"/>
+<text class="zlbl" x="50" y="600">V1 Concurrency Details</text>
+
+<!-- ── ITransaction ── x=40 y=40 w=330 h=148 -->
+<g class="un iface">
+  <rect x="40" y="40" width="330" height="148" rx="8"/>
+  <line class="dv" x1="40" y1="84" x2="370" y2="84"/>
+  <text class="stereo" x="205" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="205" y="76" text-anchor="middle">ITransaction : IDisposable</text>
+  <text class="prop"   x="56" y="102">+ Id : TransactionId</text>
+  <text class="prop"   x="56" y="117">+ Status : TransactionStatus</text>
+  <text class="prop"   x="56" y="132">+ IsolationLevel : IsolationLevel</text>
+  <text class="member" x="56" y="147">+ Commit() : void</text>
+  <text class="member" x="56" y="162">+ Rollback() : void</text>
+</g>
+
+<!-- ── ITransactionManager ── x=400 y=40 w=370 h=148 -->
+<g class="un iface">
+  <rect x="400" y="40" width="370" height="148" rx="8"/>
+  <line class="dv" x1="400" y1="84" x2="770" y2="84"/>
+  <text class="stereo" x="585" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="585" y="76" text-anchor="middle">ITransactionManager</text>
+  <text class="member" x="416" y="102">+ Begin(level : IsolationLevel) : ITransaction</text>
+  <text class="member" x="416" y="117">+ GetActive(id : TransactionId) : ITransaction?</text>
+  <text class="member" x="416" y="132">+ GetActiveTransactions()</text>
+  <text class="member" x="416" y="147">            : IReadOnlyList&lt;ITransaction&gt;</text>
+  <text class="member" x="416" y="162">— triggers GC every 100 commits (V1) —</text>
+</g>
+
+<!-- ── ILockManager ── x=800 y=40 w=360 h=163 -->
+<g class="un iface">
+  <rect x="800" y="40" width="360" height="163" rx="8"/>
+  <line class="dv" x1="800" y1="84" x2="1160" y2="84"/>
+  <text class="stereo" x="980" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="980" y="76" text-anchor="middle">ILockManager</text>
+  <text class="member" x="816" y="102">+ TryAcquire(key, mode, tx, timeout)</text>
+  <text class="member" x="816" y="117">            : LockResult</text>
+  <text class="member" x="816" y="132">+ Release(tx : ITransaction) : void</text>
+  <text class="member" x="816" y="147">+ DetectDeadlock(tx, out victim)</text>
+  <text class="member" x="816" y="162">            : bool</text>
+  <text class="member" x="816" y="177">— strict 2PL · 5s timeout → abort victim —</text>
+  <text class="member" x="816" y="192">— DFS wait-for graph; victim = max TxnId —</text>
+</g>
+
+<!-- ── IVersionManager ── x=1200 y=40 w=330 h=163 -->
+<g class="un iface">
+  <rect x="1200" y="40" width="330" height="163" rx="8"/>
+  <line class="dv" x1="1200" y1="84" x2="1530" y2="84"/>
+  <text class="stereo" x="1365" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1365" y="76" text-anchor="middle">IVersionManager</text>
+  <text class="member" x="1216" y="102">+ WriteVersion(page, data, tx)</text>
+  <text class="member" x="1216" y="117">+ TryReadVersion(page, reader,</text>
+  <text class="member" x="1216" y="132">            out data) : bool</text>
+  <text class="member" x="1216" y="147">+ Purge(oldestActiveId)</text>
+  <text class="member" x="1216" y="162">— MVCC · per-page version chains —</text>
+  <text class="member" x="1216" y="177">— Visibility: BeginTs ≤ snap &lt; EndTs —</text>
+  <text class="member" x="1216" y="192">— GC every 100 commits (V1) —</text>
+</g>
+
+<!-- ── Implementations row ── -->
+<g class="un">
+  <rect x="40" y="240" width="330" height="148" rx="8"/>
+  <line class="dv" x1="40" y1="276" x2="370" y2="276"/>
+  <text class="uname"  x="205" y="262" text-anchor="middle">Transaction</text>
+  <text class="prop"   x="56" y="294">- Id : TransactionId</text>
+  <text class="prop"   x="56" y="309">- StartTimestamp : long</text>
+  <text class="prop"   x="56" y="324">- IsolationLevel : IsolationLevel</text>
+  <text class="member" x="56" y="339">- RollbackActions : List&lt;Func&lt;Task&gt;&gt;</text>
+  <text class="member" x="56" y="354">+ Commit() / Rollback()</text>
+  <text class="member" x="56" y="369">— V2 scaffold · V1 fully implemented —</text>
+</g>
+
+<g class="un">
+  <rect x="400" y="240" width="370" height="148" rx="8"/>
+  <line class="dv" x1="400" y1="276" x2="770" y2="276"/>
+  <text class="uname"  x="585" y="262" text-anchor="middle">TransactionManager</text>
+  <text class="prop"   x="416" y="294">- _lockManager : ILockManager</text>
+  <text class="prop"   x="416" y="309">- _versionManager : IVersionManager</text>
+  <text class="prop"   x="416" y="324">- _walManager : ILogWriter</text>
+  <text class="member" x="416" y="339">- _activeTxns : ConcurrentDict&lt;long,Tx&gt;</text>
+  <text class="member" x="416" y="354">+ BeginAsync / CommitAsync / RollbackAsync</text>
+  <text class="member" x="416" y="369">TryScheduleGarbageCollection() every 100 commits</text>
+</g>
+
+<g class="un">
+  <rect x="800" y="240" width="360" height="148" rx="8"/>
+  <line class="dv" x1="800" y1="276" x2="1160" y2="276"/>
+  <text class="uname"  x="980" y="262" text-anchor="middle">LockManager</text>
+  <text class="prop"   x="816" y="294">- _locks : ConcurrentDict&lt;string, LockEntry&gt;</text>
+  <text class="prop"   x="816" y="309">- _txnLocks : ConcurrentDict&lt;long, Set&gt;</text>
+  <text class="member" x="816" y="324">- _detector : DeadlockDetector</text>
+  <text class="member" x="816" y="339">LockEntry: _exclusiveLock : Semaphore(1,1)</text>
+  <text class="member" x="816" y="354">          _sharedLock : Semaphore(MaxValue)</text>
+  <text class="member" x="816" y="369">AcquireLockAsync — timeout + DFS deadlock</text>
+</g>
+
+<g class="un">
+  <rect x="1200" y="240" width="330" height="148" rx="8"/>
+  <line class="dv" x1="1200" y1="276" x2="1530" y2="276"/>
+  <text class="uname"  x="1365" y="262" text-anchor="middle">VersionManager</text>
+  <text class="prop"   x="1216" y="294">- _chains : ConcurrentDict&lt;Pointer,</text>
+  <text class="prop"   x="1216" y="309">            List&lt;VersionedRecord&gt;&gt;</text>
+  <text class="prop"   x="1216" y="324">- _currentTimestamp : long (Interlocked)</text>
+  <text class="member" x="1216" y="339">VersionedRecord: BeginTs, EndTs, CommitOrder</text>
+  <text class="member" x="1216" y="354">TryReadVersion → walk chain, pick visible</text>
+  <text class="member" x="1216" y="369">Purge → remove EndTs &lt; minActiveTs</text>
+</g>
+
+<!-- impl arrows -->
+<path class="ri" d="M205,240 L205,188"/>
+<path class="ri" d="M585,240 L585,188"/>
+<path class="ri" d="M980,240 L980,203"/>
+<path class="ri" d="M1365,240 L1365,203"/>
+
+<!-- ── Value types row ── -->
+<g class="un vtype">
+  <rect x="40" y="448" width="220" height="96" rx="8"/>
+  <line class="dv" x1="40" y1="476" x2="260" y2="476"/>
+  <text class="uname"  x="150" y="466" text-anchor="middle">TransactionId</text>
+  <text class="member" x="56" y="494">record struct(long Value)</text>
+  <text class="member" x="56" y="509">monotonically increasing</text>
+  <text class="member" x="56" y="524">from ITransactionManager</text>
+</g>
+
+<g class="un vtype">
+  <rect x="278" y="448" width="240" height="96" rx="8"/>
+  <line class="dv" x1="278" y1="476" x2="518" y2="476"/>
+  <text class="uname"  x="398" y="466" text-anchor="middle">TransactionStatus</text>
+  <text class="member" x="294" y="494">enum:</text>
+  <text class="member" x="294" y="509">  Active</text>
+  <text class="member" x="294" y="524">  Committed  |  Aborted</text>
+</g>
+
+<g class="un vtype">
+  <rect x="536" y="448" width="240" height="96" rx="8"/>
+  <line class="dv" x1="536" y1="476" x2="776" y2="476"/>
+  <text class="uname"  x="656" y="466" text-anchor="middle">IsolationLevel</text>
+  <text class="member" x="552" y="494">enum:</text>
+  <text class="member" x="552" y="509">  ReadUncommitted  ReadCommitted</text>
+  <text class="member" x="552" y="524">  RepeatableRead  Serializable</text>
+</g>
+
+<g class="un vtype">
+  <rect x="794" y="448" width="240" height="96" rx="8"/>
+  <line class="dv" x1="794" y1="476" x2="1034" y2="476"/>
+  <text class="uname"  x="914" y="466" text-anchor="middle">LockKey</text>
+  <text class="member" x="810" y="494">record struct(</text>
+  <text class="member" x="810" y="509">  string Collection,</text>
+  <text class="member" x="810" y="524">  long RecordId)</text>
+</g>
+
+<g class="un vtype">
+  <rect x="1052" y="448" width="240" height="96" rx="8"/>
+  <line class="dv" x1="1052" y1="476" x2="1292" y2="476"/>
+  <text class="uname"  x="1172" y="466" text-anchor="middle">LockMode</text>
+  <text class="member" x="1068" y="494">Shared · Exclusive · Update</text>
+  <text class="member" x="1068" y="509">RangeShared · RangeExclusive</text>
+  <text class="member" x="1068" y="524">2PL: Exclusive needed for write</text>
+</g>
+
+<g class="un vtype">
+  <rect x="1310" y="448" width="216" height="96" rx="8"/>
+  <line class="dv" x1="1310" y1="476" x2="1526" y2="476"/>
+  <text class="uname"  x="1418" y="466" text-anchor="middle">LockResult</text>
+  <text class="member" x="1326" y="494">enum:</text>
+  <text class="member" x="1326" y="509">  Granted  |  Waiting</text>
+  <text class="member" x="1326" y="524">  Deadlock |  TimedOut</text>
+</g>
+
+<!-- ── V1 detail row ── -->
+<g class="un v1">
+  <rect x="40" y="598" width="540" height="165" rx="8"/>
+  <line class="dv" x1="40" y1="626" x2="580" y2="626"/>
+  <text class="stereo-g" x="310" y="614" text-anchor="middle">«V1 · DeadlockDetector»</text>
+  <text class="member" x="56" y="644">- _waitForGraph : Dict&lt;long, HashSet&lt;long&gt;&gt;</text>
+  <text class="member" x="56" y="659">+ AddWait(waiter, holders) / RemoveWait(txnId)</text>
+  <text class="member" x="56" y="674">DFS cycle detection on wait-for graph</text>
+  <text class="member" x="56" y="689">Victim selection: max TransactionId in cycle</text>
+  <text class="member" x="56" y="704">Called by LockManager on AcquireLockAsync timeout</text>
+  <text class="member" x="56" y="719">Abort victim → throw TransactionAbortedException</text>
+  <text class="member" x="56" y="734">Caller retries with exponential backoff</text>
+</g>
+
+<g class="un v1">
+  <rect x="610" y="598" width="540" height="165" rx="8"/>
+  <line class="dv" x1="610" y1="626" x2="1150" y2="626"/>
+  <text class="stereo-g" x="880" y="614" text-anchor="middle">«V1 · VersionedRecord visibility»</text>
+  <text class="member" x="626" y="644">struct VersionedRecord { Pointer, Data, BeginTs,</text>
+  <text class="member" x="626" y="659">  EndTs, CommitOrder, WriteOrder, IsCommitted }</text>
+  <text class="member" x="626" y="674">Visible if: IsCommitted AND BeginTs ≤ readTs AND EndTs &gt; readTs</text>
+  <text class="member" x="626" y="689">Best-version: highest BeginTs, then CommitOrder</text>
+  <text class="member" x="626" y="704">then WriteOrder (tie-break)</text>
+  <text class="member" x="626" y="719">GC condition: IsCommitted AND EndTs &lt; minActiveTs</text>
+  <text class="member" x="626" y="734">Triggered: every 100 commits via TransactionManager</text>
+</g>
+
+<g class="un v1">
+  <rect x="1180" y="598" width="346" height="165" rx="8"/>
+  <line class="dv" x1="1180" y1="626" x2="1526" y2="626"/>
+  <text class="stereo-g" x="1353" y="614" text-anchor="middle">«V1 · LockEntry»</text>
+  <text class="member" x="1196" y="644">_exclusiveLock : SemaphoreSlim(1,1)</text>
+  <text class="member" x="1196" y="659">_sharedLock : SemaphoreSlim(MaxValue)</text>
+  <text class="member" x="1196" y="674">_sharedHolders : HashSet&lt;long&gt;</text>
+  <text class="member" x="1196" y="689">_exclusiveHolder : long?</text>
+  <text class="member" x="1196" y="704">Range locks via _rangeLocks dict</text>
+  <text class="member" x="1196" y="719">SemaphoreSlim per collection prefix</text>
+  <text class="member" x="1196" y="734">Used for Serializable isolation level</text>
+</g>
+</svg>
+
+
+<!-- ════════════════════════════════════════════════════════════════
+     TAB 4 — WAL + SCHEMA + SERIALIZATION
+     ════════════════════════════════════════════════════════════════ -->
+<svg id="tab-wal" class="tab-svg" viewBox="0 0 1560 800" preserveAspectRatio="xMidYMin meet">
+<rect width="1560" height="800" fill="url(#oogrid)"/>
+
+<!-- zones -->
+<rect class="zbg" x="30" y="10" width="960" height="200" rx="12"/>
+<text class="zlbl" x="50" y="30">Write-Ahead Log (WAL)</text>
+<rect class="zbg" x="1010" y="10" width="520" height="200" rx="12"/>
+<text class="zlbl" x="1030" y="30">Schema Catalog</text>
+<rect class="zbg" x="30" y="230" width="960" height="185" rx="12"/>
+<text class="zlbl" x="50" y="250">WAL Supporting Types</text>
+<rect class="zbg" x="1010" y="230" width="520" height="185" rx="12"/>
+<text class="zlbl" x="1030" y="250">Schema Supporting Types</text>
+<rect class="zbg" x="30" y="435" width="1500" height="180" rx="12"/>
+<text class="zlbl" x="50" y="454">Serialization + Constraints</text>
+
+<!-- ── ILogWriter ── x=40 y=40 w=460 h=163 -->
+<g class="un iface">
+  <rect x="40" y="40" width="460" height="163" rx="8"/>
+  <line class="dv" x1="40" y1="84" x2="500" y2="84"/>
+  <text class="stereo" x="270" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="270" y="76" text-anchor="middle">ILogWriter : IDisposable</text>
+  <text class="prop"   x="56" y="102">+ CurrentLsn : LogSequenceNumber</text>
+  <text class="member" x="56" y="117">+ Append(record) : LogSequenceNumber</text>
+  <text class="member" x="56" y="132">+ AppendAsync(record) : ValueTask&lt;LSN&gt;</text>
+  <text class="member" x="56" y="147">+ ForceSync(upTo : LSN) : void</text>
+  <text class="member" x="56" y="162">+ ScheduleGroupCommit(lsn,</text>
+  <text class="member" x="56" y="177">            onFlushed : Action&lt;LSN&gt;)</text>
+  <text class="member" x="56" y="192">— V1: 100ms flush timer + commit-forced flush —</text>
+</g>
+
+<!-- ── IRecoveryManager ── x=530 y=40 w=430 h=163 -->
+<g class="un iface">
+  <rect x="530" y="40" width="430" height="163" rx="8"/>
+  <line class="dv" x1="530" y1="84" x2="960" y2="84"/>
+  <text class="stereo" x="745" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="745" y="76" text-anchor="middle">IRecoveryManager</text>
+  <text class="member" x="546" y="102">+ Recover(log, store) : RecoveryResult</text>
+  <text class="member" x="546" y="117">+ FindCheckpoint(log) : LogSequenceNumber</text>
+  <text class="member" x="546" y="132">+ Checkpoint(log, store, txm) : void</text>
+  <text class="member" x="546" y="147">— Three-phase on startup: —</text>
+  <text class="member" x="546" y="162">   1. Analysis  2. Redo  3. Undo</text>
+  <text class="member" x="546" y="177">— Writes CLR for each undone operation —</text>
+  <text class="member" x="546" y="192">— Truncates old log segments after checkpoint —</text>
+</g>
+
+<!-- ── ISchemaStore ── x=1030 y=40 w=460 h=133 -->
+<g class="un iface">
+  <rect x="1030" y="40" width="460" height="133" rx="8"/>
+  <line class="dv" x1="1030" y1="84" x2="1490" y2="84"/>
+  <text class="stereo" x="1260" y="58" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1260" y="76" text-anchor="middle">ISchemaStore</text>
+  <text class="member" x="1046" y="102">+ TryLoad(name) : CollectionSchema?</text>
+  <text class="member" x="1046" y="117">+ Save(schema : CollectionSchema)</text>
+  <text class="member" x="1046" y="132">+ Exists(name : string) : bool</text>
+  <text class="member" x="1046" y="147">+ Delete(name : string)</text>
+  <text class="member" x="1046" y="162">IAutoIncrementStore + NextValue / Peek / Reset</text>
+</g>
+
+<!-- WAL supporting types -->
+<g class="un vtype">
+  <rect x="40" y="248" width="240" height="96" rx="8"/>
+  <line class="dv" x1="40" y1="276" x2="280" y2="276"/>
+  <text class="uname"  x="160" y="266" text-anchor="middle">LogSequenceNumber</text>
+  <text class="member" x="56" y="294">record struct(long Value)</text>
+  <text class="member" x="56" y="309">monotonically increasing</text>
+  <text class="member" x="56" y="324">IComparable · operator &lt; &gt; ≤ ≥</text>
+</g>
+
+<g class="un vtype">
+  <rect x="298" y="248" width="280" height="96" rx="8"/>
+  <line class="dv" x1="298" y1="276" x2="578" y2="276"/>
+  <text class="uname"  x="438" y="266" text-anchor="middle">LogRecord</text>
+  <text class="member" x="314" y="294">Type: Insert / Update / Delete / Commit</text>
+  <text class="member" x="314" y="309">      Abort / CLR / Checkpoint</text>
+  <text class="member" x="314" y="324">Lsn, TxnId, PrevLsn (chain), CollectionId</text>
+</g>
+
+<g class="un v1">
+  <rect x="596" y="248" width="370" height="96" rx="8"/>
+  <line class="dv" x1="596" y1="276" x2="966" y2="276"/>
+  <text class="stereo-g" x="781" y="266" text-anchor="middle">«V1 · WALManager record layout»</text>
+  <text class="member" x="612" y="284">[Length4][Type1][LSN8][TxnId8][PrevLSN8]</text>
+  <text class="member" x="612" y="299">[Timestamp8][CollectionId4][Pointer13]</text>
+  <text class="member" x="612" y="314">[UndoNextLSN8][BeforeLen4+data][AfterLen4+data]</text>
+  <text class="member" x="612" y="329">File: wal_{NNNNNNNN}.log · rotate at 10MB</text>
+</g>
+
+<!-- Schema supporting types -->
+<g class="un">
+  <rect x="1030" y="248" width="460" height="130" rx="8"/>
+  <line class="dv" x1="1030" y1="276" x2="1490" y2="276"/>
+  <text class="uname"  x="1260" y="266" text-anchor="middle">CollectionSchema</text>
+  <text class="prop"   x="1046" y="294">+ Name : string</text>
+  <text class="prop"   x="1046" y="309">+ PrimaryIndexRootPageId : PageId</text>
+  <text class="prop"   x="1046" y="324">+ SecondaryIndexDefinitions :</text>
+  <text class="prop"   x="1046" y="339">      IReadOnlyList&lt;IndexDefinition&gt;</text>
+  <text class="member" x="1046" y="358">+ IndexDefinition: Name, FieldPath,</text>
+  <text class="member" x="1046" y="373">      IsUnique : bool, Ascending : bool</text>
+</g>
+
+<!-- Serialization section -->
+<g class="un iface">
+  <rect x="40" y="453" width="430" height="133" rx="8"/>
+  <line class="dv" x1="40" y1="497" x2="470" y2="497"/>
+  <text class="stereo" x="255" y="471" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="255" y="489" text-anchor="middle">ISerializer&lt;T&gt;</text>
+  <text class="member" x="56" y="515">+ Serialize(value, writer : IBufferWriter&lt;byte&gt;)</text>
+  <text class="member" x="56" y="530">+ Deserialize(data : ReadOnlySpan&lt;byte&gt;) : T</text>
+  <text class="member" x="56" y="545">+ EstimateSize(value : T) : int</text>
+  <text class="member" x="56" y="560">BinarySerializer&lt;T&gt; implements this (V2 scaffold)</text>
+  <text class="member" x="56" y="575">V1: expression-tree compiled per (Type, SchemaVersion)</text>
+</g>
+
+<g class="un iface">
+  <rect x="490" y="453" width="430" height="133" rx="8"/>
+  <line class="dv" x1="490" y1="497" x2="920" y2="497"/>
+  <text class="stereo" x="705" y="471" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="705" y="489" text-anchor="middle">IKeyExtractor&lt;T, TKey&gt;</text>
+  <text class="member" x="506" y="515">+ ExtractKey(value : T) : TKey</text>
+  <text class="member" x="506" y="530">+ CompareKeys(x : TKey, y : TKey) : int</text>
+  <text class="member" x="506" y="545">Used by Collection to get PK from record</text>
+  <text class="member" x="506" y="560">KeyExtractor&lt;T,TKey&gt; : IKeyExtractor impl (V2)</text>
+  <text class="member" x="506" y="575">V1: compiled expression; CompareKeys → IComparer</text>
+</g>
+
+<g class="un iface">
+  <rect x="940" y="453" width="400" height="118" rx="8"/>
+  <line class="dv" x1="940" y1="497" x2="1340" y2="497"/>
+  <text class="stereo" x="1140" y="471" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1140" y="489" text-anchor="middle">IConstraintValidator&lt;T&gt;</text>
+  <text class="member" x="956" y="515">+ ValidateInsert(value, ctx)</text>
+  <text class="member" x="956" y="530">+ ValidateUpdate(oldValue, newValue, ctx)</text>
+  <text class="member" x="956" y="545">+ ValidateDelete(value, ctx)</text>
+  <text class="member" x="956" y="560">CompositeConstraintValidator — chains N validators</text>
+  <text class="member" x="956" y="575">ForeignKeyValidator — resolves FK before mutation</text>
+</g>
+
+<g class="un iface">
+  <rect x="1360" y="453" width="170" height="118" rx="8"/>
+  <line class="dv" x1="1360" y1="497" x2="1530" y2="497"/>
+  <text class="stereo" x="1445" y="471" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1445" y="489" text-anchor="middle">IPartitionStrategy</text>
+  <text class="member" x="1376" y="515">&lt;TKey&gt;</text>
+  <text class="member" x="1376" y="530">+ GetPartition(</text>
+  <text class="member" x="1376" y="545">    key : TKey,</text>
+  <text class="member" x="1376" y="560">    count : int) : int</text>
+  <text class="member" x="1376" y="575">Hash impl:</text>
+  <text class="member" x="1376" y="590">(h &amp; MaxVal) % n</text>
+</g>
+</svg>
+
+
+<!-- ════════════════════════════════════════════════════════════════
+     TAB 5 — PUBLIC API COMPOSITION
+     ════════════════════════════════════════════════════════════════ -->
+<svg id="tab-api" class="tab-svg" viewBox="0 0 1560 800" preserveAspectRatio="xMidYMin meet">
+<rect width="1560" height="800" fill="url(#oogrid)"/>
+
+<!-- zones -->
+<rect class="zbg" x="30" y="10" width="760" height="380" rx="12"/>
+<text class="zlbl" x="50" y="30">Database  (composition root)</text>
+<rect class="zbg" x="810" y="10" width="720" height="380" rx="12"/>
+<text class="zlbl" x="830" y="30">Collection&lt;T, TKey&gt;</text>
+<rect class="zbg" x="30" y="410" width="1500" height="370" rx="12"/>
+<text class="zlbl" x="50" y="430">Maintenance + Operations</text>
+
+<!-- ── Database ── x=50 y=40 w=720 h=320 -->
+<g class="un" style="cursor:default;">
+  <rect x="50" y="40" width="720" height="340" rx="8" style="fill:var(--clay-soft);stroke:var(--clay);stroke-width:1.5;"/>
+  <line class="dv" x1="50" y1="92" x2="770" y2="92"/>
+  <text class="stereo" x="410" y="60" text-anchor="middle">«sealed class»</text>
+  <text class="uname"  x="410" y="80" text-anchor="middle">Database</text>
+  <text class="prop"   x="66" y="114">Dependencies injected at constructor:</text>
+  <text class="prop"   x="66" y="132">  IOperationContextFactory  _contextFactory</text>
+  <text class="prop"   x="66" y="148">  ISchemaStore              _schemaStore</text>
+  <text class="prop"   x="66" y="164">  IAutoIncrementStore       _autoIncrementStore</text>
+  <text class="prop"   x="66" y="180">  ITransactionManager       _txManager</text>
+  <text class="prop"   x="66" y="196">  ILogWriter                _logWriter</text>
+  <text class="prop"   x="66" y="212">  IVacuumEngine             _vacuumEngine</text>
+  <text class="prop"   x="66" y="228">  IBackupEngine             _backupEngine</text>
+  <text class="member" x="66" y="252">+ OpenCollection&lt;T,TKey&gt;(name, options)</text>
+  <text class="member" x="66" y="267">        : Collection&lt;T,TKey&gt;</text>
+  <text class="member" x="66" y="286">DatabaseOptions:</text>
+  <text class="member" x="66" y="301">  DataFilePath · WalFilePath</text>
+  <text class="member" x="66" y="316">  BufferPoolCapacity (default 1024 pages)</text>
+  <text class="member" x="66" y="331">  Port (default 5432)</text>
+  <text class="member" x="66" y="350">All deps resolved via constructor DI — no service locator</text>
+  <text class="member" x="66" y="365">Infrastructure.FilePageStore wired here at startup</text>
+</g>
+
+<!-- ── Collection<T,TKey> ── x=830 y=40 w=680 h=340 -->
+<g class="un" style="cursor:default;">
+  <rect x="830" y="40" width="680" height="340" rx="8" style="fill:var(--clay-soft);stroke:var(--clay);stroke-width:1.5;"/>
+  <line class="dv" x1="830" y1="92" x2="1510" y2="92"/>
+  <text class="stereo" x="1170" y="60" text-anchor="middle">«sealed class»</text>
+  <text class="uname"  x="1170" y="80" text-anchor="middle">Collection&lt;T, TKey&gt;</text>
+  <text class="prop"   x="846" y="114">Constructor dependencies:</text>
+  <text class="prop"   x="846" y="132">  IUniqueIndex&lt;TKey&gt;                  primaryIndex</text>
+  <text class="prop"   x="846" y="148">  IReadOnlyList&lt;IDuplicateIndex&lt;TKey&gt;&gt; secondaryIndexes</text>
+  <text class="prop"   x="846" y="164">  ISerializer&lt;T&gt;                       serializer</text>
+  <text class="prop"   x="846" y="180">  IKeyExtractor&lt;T,TKey&gt;               keyExtractor</text>
+  <text class="prop"   x="846" y="196">  IConstraintValidator&lt;T&gt;             validator</text>
+  <text class="prop"   x="846" y="212">  IAutoIncrementStore                  autoIncrement</text>
+  <text class="prop"   x="846" y="228">  OperationContextFactory              ctxFactory</text>
+  <text class="prop"   x="846" y="244">  string                               Name</text>
+  <text class="member" x="846" y="268">+ GetAsync(key) / InsertAsync(value) / DeleteAsync(key)</text>
+  <text class="member" x="846" y="283">+ UpdateAsync(key, updater) / UpsertAsync(value)</text>
+  <text class="member" x="846" y="298">+ OpenCursor(ctx) : IIndexCursor&lt;TKey,PageId&gt;</text>
+  <text class="member" x="846" y="313">CollectionOptions&lt;T,TKey&gt;:</text>
+  <text class="member" x="846" y="328">  KeySelector : Func&lt;T,TKey&gt;</text>
+  <text class="member" x="846" y="343">  AutoIncrement : bool</text>
+  <text class="member" x="846" y="358">  PartitionCount : int (default 1)</text>
+  <text class="member" x="846" y="373">  PartitionStrategy : IPartitionStrategy&lt;TKey&gt;?</text>
+</g>
+
+<!-- dep arrows from Database and Collection down to abstractions -->
+<path class="rd" d="M410,380 C410,430 255,430 255,450"/>
+<path class="rd" d="M1170,380 C1170,430 1100,430 1100,450"/>
+
+<!-- ── IOperationContext ── x=50 y=450 w=450 h=148 -->
+<g class="un iface">
+  <rect x="50" y="450" width="450" height="148" rx="8"/>
+  <line class="dv" x1="50" y1="494" x2="500" y2="494"/>
+  <text class="stereo" x="275" y="468" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="275" y="486" text-anchor="middle">IOperationContext : IDisposable</text>
+  <text class="prop"   x="66" y="512">+ Id : OperationContextId (Guid)</text>
+  <text class="prop"   x="66" y="527">+ Transaction : ITransaction</text>
+  <text class="prop"   x="66" y="542">+ PageBuffer : IPageBuffer</text>
+  <text class="prop"   x="66" y="557">+ IsReadOnly : bool</text>
+  <text class="member" x="66" y="572">Created by OperationContextFactory</text>
+  <text class="member" x="66" y="587">Passed through every Engine call</text>
+</g>
+
+<!-- ── IVacuumEngine ── x=530 y=450 w=360 h=133 -->
+<g class="un iface">
+  <rect x="530" y="450" width="360" height="133" rx="8"/>
+  <line class="dv" x1="530" y1="494" x2="890" y2="494"/>
+  <text class="stereo" x="710" y="468" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="710" y="486" text-anchor="middle">IVacuumEngine</text>
+  <text class="member" x="546" y="512">+ Run(name, ctx) : VacuumResult</text>
+  <text class="member" x="546" y="527">+ EstimateReclaimable(name) : long</text>
+  <text class="member" x="546" y="542">VacuumResult(PagesReclaimed, BytesFreed)</text>
+  <text class="member" x="546" y="557">Purges MVCC chains older than oldest</text>
+  <text class="member" x="546" y="572">active transaction · reclaims dead pages</text>
+</g>
+
+<!-- ── IBackupEngine ── x=920 y=450 w=360 h=133 -->
+<g class="un iface">
+  <rect x="920" y="450" width="360" height="133" rx="8"/>
+  <line class="dv" x1="920" y1="494" x2="1280" y2="494"/>
+  <text class="stereo" x="1100" y="468" text-anchor="middle">«interface»</text>
+  <text class="uname"  x="1100" y="486" text-anchor="middle">IBackupEngine</text>
+  <text class="member" x="936" y="512">+ Create(destPath, ctx) : BackupManifest</text>
+  <text class="member" x="936" y="527">BackupManifest:</text>
+  <text class="member" x="936" y="542">  SourcePath : string</text>
+  <text class="member" x="936" y="557">  CreatedAt : DateTimeOffset</text>
+  <text class="member" x="936" y="572">  TotalPages : long</text>
+  <text class="member" x="936" y="587">  ConsistentLsn : LogSequenceNumber</text>
+</g>
+
+<!-- ── PartitionRouter<TKey> ── x=1310 y=450 w=222 h=200 -->
+<g class="un">
+  <rect x="1310" y="450" width="222" height="200" rx="8"/>
+  <line class="dv" x1="1310" y1="480" x2="1532" y2="480"/>
+  <text class="uname"  x="1421" y="470" text-anchor="middle">PartitionRouter</text>
+  <text class="member" x="1326" y="498">&lt;TKey&gt;</text>
+  <text class="prop"   x="1326" y="516">- _strategy</text>
+  <text class="member" x="1326" y="531">  IPartitionStrategy</text>
+  <text class="prop"   x="1326" y="546">- _partitions</text>
+  <text class="member" x="1326" y="561">  IReadOnlyList</text>
+  <text class="member" x="1326" y="576">  &lt;PartitionDescriptor&gt;</text>
+  <text class="member" x="1326" y="596">+ Route(key) :</text>
+  <text class="member" x="1326" y="611">  PartitionDescriptor</text>
+  <text class="member" x="1326" y="630">PartitionDescriptor:</text>
+  <text class="member" x="1326" y="645">  Id : int, Name : string</text>
+</g>
+</svg>
+
+</div><!-- end stage -->
+
+<script>
+function showTab(id){
+  document.querySelectorAll('.tab-svg').forEach(s=>s.classList.remove('active'));
+  const el=document.getElementById('tab-'+id);
+  if(el)el.classList.add('active');
+  document.querySelectorAll('.chip').forEach(c=>c.classList.toggle('on',c.dataset.tab===id));
+}
+document.querySelectorAll('.chip').forEach(c=>c.addEventListener('click',()=>showTab(c.dataset.tab)));
+
+document.getElementById('themeToggle').addEventListener('click',()=>{
+  const dark=!document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark',dark);
+  document.documentElement.setAttribute('data-theme',dark?'dark':'light');
+  localStorage.setItem('theme',dark?'dark':'light');
+});
+</script>
+</body>
+</html>

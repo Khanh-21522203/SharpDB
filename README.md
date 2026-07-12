@@ -67,7 +67,7 @@ Core modules:
 
 Requirements:
 
-- .NET SDK 9.0+
+- .NET SDK 10.0+
 
 Build commands:
 

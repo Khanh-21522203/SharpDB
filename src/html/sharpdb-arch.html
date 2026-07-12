@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SharpDB V2 — Architecture</title>
+<script>
+  (function(){const s=localStorage.getItem('theme');const dark=s?s==='dark':matchMedia('(prefers-color-scheme: dark)').matches;document.documentElement.classList.toggle('dark',dark);document.documentElement.setAttribute('data-theme',dark?'dark':'light');})();
+</script>
+<style>
+  :root {
+    --bg:#F6F8FB;--surface:#FFFFFF;--surface2:#EDF1F7;
+    --ink:#0F172A;--body:#334155;--muted:#64748B;
+    --line:#CBD5E1;--line-soft:#E2E8F0;
+    --clay:#0D9488;--clay-soft:rgba(13,148,136,0.10);
+    --olive:#7C3AED;--olive-soft:rgba(124,58,237,0.10);
+    --gold:#B8873B;--gold-soft:rgba(184,135,59,0.12);
+    --blue:#3B82F6;--blue-soft:rgba(59,130,246,0.10);
+    --risk:#DC4C3F;--risk-soft:rgba(220,76,63,0.12);
+    --zone:rgba(15,23,42,0.028);--zone-line:#CBD5E1;
+    --shadow:rgba(15,23,42,0.10);
+    --serif:ui-serif,Georgia,"Times New Roman",serif;
+    --sans:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  :root[data-theme="light"] {
+    --bg:#F6F8FB;--surface:#FFFFFF;--surface2:#EDF1F7;
+    --ink:#0F172A;--body:#334155;--muted:#64748B;
+    --line:#CBD5E1;--line-soft:#E2E8F0;
+    --clay:#0D9488;--clay-soft:rgba(13,148,136,0.10);
+    --olive:#7C3AED;--olive-soft:rgba(124,58,237,0.10);
+    --gold:#B8873B;--gold-soft:rgba(184,135,59,0.12);
+    --blue:#3B82F6;--blue-soft:rgba(59,130,246,0.10);
+    --risk:#DC4C3F;--risk-soft:rgba(220,76,63,0.12);
+    --zone:rgba(15,23,42,0.028);--zone-line:#CBD5E1;
+  }
+  html.dark, :root[data-theme="dark"] {
+    --bg:#080D17;--surface:#111827;--surface2:#1A2438;
+    --ink:#F1F5F9;--body:#CBD5E1;--muted:#64748B;
+    --line:#1E2D42;--line-soft:#111827;
+    --clay:#2DD4BF;--clay-soft:rgba(45,212,191,0.12);
+    --olive:#A78BFA;--olive-soft:rgba(167,139,250,0.12);
+    --gold:#E0B168;--gold-soft:rgba(224,177,104,0.14);
+    --blue:#60A5FA;--blue-soft:rgba(96,165,250,0.12);
+    --risk:#F0796B;--risk-soft:rgba(240,121,107,0.14);
+    --zone:rgba(241,245,249,0.03);--zone-line:#1E2D42;
+  }
+  *{box-sizing:border-box;margin:0;padding:0;}
+  html,body{height:100%;}
+  body{background:var(--bg);color:var(--body);font-family:var(--sans);-webkit-font-smoothing:antialiased;display:flex;flex-direction:column;overflow:hidden;}
+
+  .bar{display:flex;align-items:center;gap:12px;flex-wrap:wrap;padding:10px 16px;border-bottom:1px solid var(--line-soft);flex:none;}
+  .bar h1{font-family:var(--serif);font-weight:500;font-size:18px;color:var(--ink);letter-spacing:-0.01em;}
+  .bar .sub{font-family:var(--mono);font-size:10px;color:var(--muted);letter-spacing:0.05em;text-transform:uppercase;}
+  .spacer{flex:1;}
+  .chips{display:flex;gap:6px;flex-wrap:wrap;}
+  .chip{flex:0 0 auto;font-family:var(--mono);font-size:10.5px;letter-spacing:0.03em;padding:5px 10px;border:1px solid var(--line);border-radius:999px;background:transparent;color:var(--muted);cursor:pointer;transition:all .15s ease;white-space:nowrap;}
+  .chip:hover{color:var(--ink);border-color:var(--muted);}
+  .chip.on{background:var(--ink);border-color:var(--ink);color:var(--bg);}
+  .chip.warn.on{background:var(--risk);border-color:var(--risk);color:#fff;}
+  .divider{width:1px;height:20px;background:var(--line);flex:none;}
+  .iconbtn{font-family:var(--mono);font-size:13px;width:26px;height:26px;line-height:1;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;display:flex;align-items:center;justify-content:center;}
+  .iconbtn:hover{color:var(--ink);border-color:var(--muted);}
+  #themeToggle{font-family:var(--mono);font-size:10.5px;text-transform:uppercase;letter-spacing:0.08em;padding:5px 10px;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--muted);cursor:pointer;}
+  #themeToggle:hover{color:var(--ink);border-color:var(--muted);}
+
+  .stage{flex:1;position:relative;min-height:0;cursor:grab;}
+  .stage.dragging{cursor:grabbing;}
+  .stage svg{position:absolute;inset:0;width:100%;height:100%;display:block;}
+
+  .zone rect{fill:var(--zone);stroke:var(--zone-line);stroke-width:1;stroke-dasharray:5 5;}
+  .zone .ztitle{font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:0.09em;text-transform:uppercase;fill:var(--ink);}
+  .zone .zsub{font-family:var(--mono);font-size:9.5px;fill:var(--muted);}
+
+  .node{cursor:pointer;}
+  .node rect.box{fill:var(--surface);stroke:var(--line);stroke-width:1.4;transition:stroke .15s ease;}
+  .node:hover rect.box{stroke:var(--muted);}
+  .node.sel rect.box{stroke:var(--clay)!important;stroke-width:2.2;}
+  .node .t{font-family:var(--sans);font-size:13px;font-weight:700;fill:var(--ink);pointer-events:none;}
+  .node .k{font-family:var(--mono);font-size:8.8px;letter-spacing:0.07em;text-transform:uppercase;fill:var(--muted);pointer-events:none;}
+  .node .m{font-family:var(--mono);font-size:9.6px;fill:var(--body);pointer-events:none;}
+  .node .accent{pointer-events:none;}
+  .node.role-wire rect.box{fill:var(--blue-soft);stroke:var(--blue);}
+  .node.role-wire .accent{fill:var(--blue);}
+  .node.role-sql rect.box{fill:var(--gold-soft);stroke:var(--gold);}
+  .node.role-sql .accent{fill:var(--gold);}
+  .node.role-gate rect.box{fill:var(--clay-soft);stroke:var(--clay);}
+  .node.role-gate .accent{fill:var(--clay);}
+  .node.role-config rect.box{fill:var(--surface2);stroke:var(--line);}
+  .node.role-config .accent{fill:var(--muted);}
+  .node.role-mod rect.box{fill:var(--surface2);stroke:var(--line);}
+  .node.role-mod .accent{fill:var(--olive);}
+  .node.role-impl rect.box{fill:var(--olive-soft);stroke:var(--olive);}
+  .node.role-impl .accent{fill:var(--olive);}
+
+  .verified{display:none;}
+  .node[data-status="real"] .verified{display:block;}
+  .verified rect{fill:var(--clay);}
+  .verified text{fill:#fff;font-family:var(--mono);font-weight:700;font-size:8px;letter-spacing:0.04em;}
+
+  .riskbadge{display:none;}
+  svg.show-risk .node[data-status="stub"] rect.box,
+  svg.show-risk .node[data-status="noop"] rect.box{stroke:var(--risk);stroke-dasharray:4 3;}
+  svg.show-risk .node[data-status="stub"] .riskbadge,
+  svg.show-risk .node[data-status="noop"] .riskbadge{display:block;}
+  .riskbadge circle{fill:var(--risk);}
+  .riskbadge text{fill:#fff;font-family:var(--mono);font-weight:700;font-size:10.5px;}
+
+  .edge{stroke:var(--muted);stroke-width:1.3;fill:none;marker-end:url(#a-mut);opacity:0.55;transition:opacity .2s ease,stroke .2s ease;}
+  .edge.routed{stroke-linejoin:round;}
+  .measure{font-family:var(--mono);font-size:9.6px;visibility:hidden;pointer-events:none;}
+  .edge.dash{stroke-dasharray:5 4;}
+  .elbl{font-family:var(--mono);font-size:8.8px;fill:var(--muted);opacity:0;transition:opacity .2s ease;}
+  .elbl-bg{fill:var(--bg);stroke:var(--line-soft);stroke-width:1;opacity:0;transition:opacity .2s ease;}
+
+  svg.flowing .edge{opacity:0.08;}
+  svg.flowing .node{opacity:0.28;}
+  svg.flowing .zone{opacity:0.4;}
+  svg.flowing .edge.lit{opacity:1;stroke:var(--clay);marker-end:url(#a-clay);stroke-dasharray:7 5;stroke-width:2;animation:march 0.9s linear infinite;}
+  svg.flowing .elbl.lit{opacity:1;fill:var(--clay);font-weight:600;}
+  svg.flowing .elbl-bg.lit{opacity:0.92;}
+  svg.flowing .node.lit{opacity:1;}
+  svg.flowing .node.lit rect.box{stroke:var(--clay);stroke-width:2;}
+  @keyframes march{to{stroke-dashoffset:-12;}}
+  @media(prefers-reduced-motion:reduce){svg.flowing .edge.lit{animation:none;}}
+
+  .card{position:absolute;max-width:380px;background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:14px 16px;box-shadow:0 8px 28px var(--shadow);z-index:5;}
+  #detail{right:16px;bottom:16px;width:360px;max-height:48vh;overflow-y:auto;}
+  #detail .kick{font-family:var(--mono);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--muted);margin-bottom:2px;}
+  #detail h3{font-family:var(--serif);font-weight:500;font-size:16px;color:var(--ink);margin-bottom:2px;}
+  #detail .file{font-family:var(--mono);font-size:9.5px;color:var(--muted);margin-bottom:8px;word-break:break-all;}
+  #detail ul{margin:0 0 0 4px;padding:0;list-style:none;}
+  #detail li{font-size:11.5px;line-height:1.55;padding:2px 0 2px 12px;position:relative;}
+  #detail li::before{content:"–";position:absolute;left:0;color:var(--muted);}
+  #detail .status-line{margin-top:10px;padding:8px 10px;border-radius:8px;font-size:11px;line-height:1.5;}
+  #detail .status-line.stub,#detail .status-line.noop{background:var(--risk-soft);border:1px solid var(--risk);color:var(--ink);}
+  #detail .status-line.real{background:var(--clay-soft);border:1px solid var(--clay);color:var(--ink);}
+  #detail .status-line b{color:var(--risk);}
+  #detail .status-line.real b{color:var(--clay);}
+  #flowcap{left:16px;bottom:16px;max-width:440px;display:none;}
+  #flowcap.show{display:block;}
+  #flowcap .fname{font-family:var(--mono);font-size:10px;letter-spacing:0.06em;text-transform:uppercase;color:var(--clay);margin-bottom:4px;font-weight:700;}
+  #flowcap .fstatus{font-family:var(--mono);font-size:9.5px;color:var(--muted);margin-bottom:6px;}
+  #flowcap ol{margin-left:16px;}
+  #flowcap li{font-size:11.5px;line-height:1.5;}
+  #legend{left:16px;top:16px;padding:10px 12px;font-family:var(--mono);font-size:9.5px;color:var(--muted);display:flex;flex-direction:column;gap:5px;}
+  #legend .row{display:flex;align-items:center;gap:7px;}
+  #legend .sw{width:9px;height:9px;border-radius:2px;flex:none;}
+  #legend .divline{height:1px;background:var(--line-soft);margin:2px 0;}
+  .src{position:absolute;top:10px;right:16px;font-family:var(--mono);font-size:9px;color:var(--muted);opacity:0.8;z-index:5;}
+  @media(max-width:900px){
+    body{overflow:auto;}
+    .stage{min-height:70vh;}
+    #detail,#flowcap,#legend{position:static;width:auto;max-width:none;margin:10px 16px;}
+  }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <div>
+    <h1>SharpDB V2 — architecture &amp; build status</h1>
+    <div class="sub">5 assemblies · 26 components · PG wire (stub) · .NET 10 · 1 module with real logic</div>
+  </div>
+  <div class="spacer"></div>
+  <div class="chips" id="chips">
+    <button class="chip on" data-flow="all">Everything</button>
+    <button class="chip" data-flow="write">Write Path</button>
+    <button class="chip" data-flow="read">Read Path</button>
+    <button class="chip" data-flow="recovery">WAL Recovery</button>
+    <button class="chip" data-flow="pgquery">PG Wire Query</button>
+    <button class="chip" data-flow="partition">Partition Routing</button>
+    <button class="chip" data-flow="constraints">Constraint Check</button>
+    <button class="chip" data-flow="vacuum">Vacuum + Backup</button>
+    <button class="chip" data-flow="bootstrap">Bootstrap</button>
+  </div>
+  <div class="divider"></div>
+  <button class="chip warn" id="riskChip">⚠ Build status</button>
+  <div class="divider"></div>
+  <button class="iconbtn" id="zoomOut" title="Zoom out">–</button>
+  <button class="iconbtn" id="zoomReset" title="Reset view">⤢</button>
+  <button class="iconbtn" id="zoomIn" title="Zoom in">+</button>
+  <button id="themeToggle">Theme</button>
+</div>
+
+<div class="stage" id="stage">
+<svg id="svg" viewBox="0 0 1600 1150" role="img" aria-label="SharpDB V2 architecture diagram">
+  <defs>
+    <marker id="a-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--muted)"/>
+    </marker>
+    <marker id="a-clay" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" style="fill:var(--clay)"/>
+    </marker>
+  </defs>
+  <g id="zonesLayer"></g>
+  <g id="nodesLayer"></g>
+  <g id="edgesLayer"></g>
+  <g id="labelsLayer"></g>
+</svg>
+
+<div class="src">src/html/sharpdb-arch.html · sources: src/SharpDB.V2*/**/*.cs, read directly</div>
+
+<div class="card" id="legend">
+  <div class="row"><span class="sw" style="background:var(--blue)"></span> wire protocol server</div>
+  <div class="row"><span class="sw" style="background:var(--gold)"></span> SQL frontend</div>
+  <div class="row"><span class="sw" style="background:var(--clay)"></span> public API / composition root</div>
+  <div class="row"><span class="sw" style="background:var(--olive)"></span> engine module / infra impl</div>
+  <div class="row"><span class="sw" style="background:var(--muted)"></span> config / DTO</div>
+  <div class="divline"></div>
+  <div class="row">⚠ dashed rose = stub or silent no-op (toggle top right)</div>
+  <div class="row">green "OK" tag = verified real, working code</div>
+</div>
+
+<div class="card" id="flowcap">
+  <div class="fname" id="f-name"></div>
+  <div class="fstatus" id="f-status"></div>
+  <ol id="f-steps"></ol>
+</div>
+
+<div class="card" id="detail">
+  <div class="kick">click any box</div>
+  <h3 id="d-title">SharpDB V2</h3>
+  <div class="file">every citation on this page was verified by reading the actual .cs file, not the design docs</div>
+  <ul id="d-body">
+    <li>This is a greenfield rewrite: the architecture below is real (assemblies, classes, interfaces all exist and compile), but almost none of the behavior is implemented yet.</li>
+    <li>Toggle "Build status" to see which of the 26 components are still stubs / silent no-ops versus the one module (Partitioning) that is genuinely working today.</li>
+    <li>Use the flow chips to animate an intended request path end to end; drag to pan, scroll/pinch or +/– to zoom.</li>
+  </ul>
+</div>
+
+</div>
+
+<script>
+// ---------------------------------------------------------------------------
+// DATA
+// ---------------------------------------------------------------------------
+var ZONES = [
+  {id:'wire',   x:30,  y:30,  w:740,  h:184, t:'Wire Protocol Server',  s:'SharpDB.V2.Server · TCP 5432 · all handlers stub'},
+  {id:'sql',    x:790, y:30,  w:780,  h:184, t:'SQL Frontend',          s:'SharpDB.V2.Sql · Lexer → Parser → Planner → Executor · never calls into Engine'},
+  {id:'api',    x:30,  y:230, w:1540, h:146, t:'Public API',           s:'SharpDB.V2 · composition root'},
+  {id:'engine', x:30,  y:392, w:1540, h:548, t:'Engine Core',          s:'SharpDB.V2.Engine · core modules'},
+  {id:'infra',  x:30,  y:950, w:1540, h:175, t:'Infrastructure',       s:'4 impls · 1 real (SystemClock), 3 stub'}
+];
+
+// role: wire | sql | gate | config | mod | impl    status: real | stub | noop
+var NODES = [
+  {id:'dbserver', x:50,  y:90, w:220, h:137, role:'wire', status:'stub', k:'server', t:'DatabaseServer',
+    m:['DatabaseServer(DatabaseOptions options)','StartAsync() => Task.CompletedTask','no TcpListener is ever created'],
+    file:'src/SharpDB.V2.Server/DatabaseServer.cs',
+    body:['<code>DatabaseServer(DatabaseOptions options)</code> — constructor body is empty.','<code>StartAsync(CancellationToken ct = default)</code> immediately returns <code>Task.CompletedTask</code>.','<code>DisposeAsync()</code> returns <code>ValueTask.CompletedTask</code>.'],
+    gotcha:'StartAsync always returns Task.CompletedTask — no socket is ever opened, so nothing binds port 5432 and the process that calls this returns instantly as if the server were already running.'},
+  {id:'session', x:290, y:90, w:220, h:137, role:'wire', status:'stub', k:'session', t:'ClientSession',
+    m:['ClientSession(TcpClient client)','RunAsync() => Task.CompletedTask','no message-loop, no byte is ever read'],
+    file:'src/SharpDB.V2.Server/Session/ClientSession.cs',
+    body:['Constructor takes a <code>TcpClient</code> but stores nothing from it.','<code>RunAsync(CancellationToken ct = default)</code> returns <code>Task.CompletedTask</code> — there is no read loop, no message-type dispatch, nothing.','<code>SessionManager.Register/ShutdownAsync</code> are equally empty no-ops.'],
+    gotcha:'RunAsync does not touch the TcpClient it was given at all — a connected socket is accepted and then simply never read from or written to.'},
+  {id:'pghandlers', x:530, y:90, w:220, h:137, role:'wire', status:'stub', k:'handlers', t:'Pg*Handler',
+    m:['PgStartupHandler / PgSimpleQueryHandler /','PgExtendedQueryHandler','all: ctor stores nothing, HandleAsync() => Task.CompletedTask'],
+    file:'src/SharpDB.V2.Server/Protocol/Pg*Handler.cs',
+    body:['All three handlers share the exact same shape: <code>ctor(PgMessageReader reader, PgMessageWriter writer)</code> stores neither dependency, and <code>HandleAsync()</code> returns <code>Task.CompletedTask</code>.','<code>PgMessageReader</code>/<code>PgMessageWriter</code> each have only a constructor that takes a <code>Stream</code> and exposes zero read/write methods — there is no protocol framing code anywhere yet.','The message DTOs are real and fully shaped though: <code>Protocol/Messages/BackendMessages.cs</code> and <code>FrontendMessages.cs</code> define <code>StartupMessage</code>, <code>AuthenticationOkMessage</code>, <code>RowDescriptionMessage</code>, <code>QueryMessage</code>, <code>ParseMessage</code>/<code>BindMessage</code>/<code>ExecuteMessage</code>, <code>CommandCompleteMessage</code>, <code>ErrorResponseMessage</code> — plain records with the right fields, just nothing that serializes them onto the wire yet.'],
+    gotcha:'PgMessageReader and PgMessageWriter have constructors but no methods at all — even if a handler wanted to read or write a message, there is currently no method on either class to call.'},
+
+  {id:'lexerparser', x:810, y:90, w:233, h:137, role:'sql', status:'stub', k:'frontend', t:'Lexer + Parser',
+    m:['Lexer.Tokenize() => throw NotImplementedException','Parser.Parse() => throw NotImplementedException','TokenType (24 variants) + AST types are real'],
+    file:'src/SharpDB.V2.Sql/Parsing/{Lexer,Parser}.cs',
+    body:['<code>Lexer(string input)</code> stores the input but <code>Tokenize()</code> throws <code>NotImplementedException</code> unconditionally.','<code>Parser(IReadOnlyList&lt;Token&gt; tokens)</code> likewise throws from <code>Parse()</code>.','The AST is genuinely modeled: <code>SelectStatement</code>, <code>InsertStatement</code>, <code>UpdateStatement</code>, <code>DeleteStatement</code>, <code>JoinClause</code>, <code>WhereClause</code>, <code>OrderByClause</code>, <code>BinaryExpression</code>, <code>ColumnRef</code>, <code>Literal</code> are all populated record-like classes — the data model is ahead of the code that would produce it.'],
+    gotcha:'Tokenize() and Parse() both throw on any input, including an empty string — there is currently no path from a SQL string to an AST at all.'},
+  {id:'planner', x:1063, y:90, w:233, h:137, role:'sql', status:'stub', k:'planner', t:'QueryPlanner',
+    m:['QueryPlanner.Plan(Statement) => throws','CostEstimator is an empty class','ScanPlan/FilterPlan/JoinPlan/ProjectPlan/LimitPlan are real DTOs'],
+    file:'src/SharpDB.V2.Sql/Planning/QueryPlanner.cs',
+    body:['<code>Plan(Statement statement)</code> throws <code>NotImplementedException</code> — no AST is ever lowered to a plan.','<code>CostEstimator</code> (<code>Planning/CostEstimator.cs</code>) is a completely empty class — zero members — despite the name implying cost-based plan selection.','The plan node types (<code>ScanPlan</code>, <code>FilterPlan</code>, <code>JoinPlan</code>, <code>ProjectPlan</code>, <code>LimitPlan</code>, all extending abstract <code>QueryPlan</code>) are real, simple DTOs with the right shape.'],
+    gotcha:'CostEstimator has no fields or methods at all — there is no cost model to estimate anything with, not even a stub method to throw from.'},
+  {id:'executor', x:1316, y:90, w:233, h:137, role:'sql', status:'stub', k:'executor', t:'QueryExecutor',
+    m:['QueryExecutor.Execute(QueryPlan) => throws','never references Collection<T,TKey> or Database','ResultSet / Row are real DTOs'],
+    file:'src/SharpDB.V2.Sql/Execution/QueryExecutor.cs',
+    body:['The entire class is one method: <code>public ResultSet Execute(QueryPlan plan) => throw new NotImplementedException();</code>','It has no field, constructor, or using-directive referencing any <code>SharpDB.V2</code> or <code>SharpDB.V2.Engine</code> type — the SQL layer and the storage engine are not connected by any code path today, in either direction.'],
+    gotcha:'QueryExecutor never references Collection<T,TKey> or Database anywhere in the file — this is not a broken call into the Engine, it is the complete absence of one.'},
+
+  {id:'database', x:50, y:290, w:287, h:109, role:'gate', status:'stub', k:'public api', t:'Database',
+    m:['ctor(DatabaseOptions) body is empty','OpenCollection<T,TKey>() => throws','7 dependency fields are all "= null!" and never assigned'],
+    file:'src/SharpDB.V2/Database.cs',
+    body:['<code>public Database(DatabaseOptions options) { }</code> — the constructor body does nothing.','All seven fields (<code>_contextFactory</code>, <code>_schemaStore</code>, <code>_autoIncrementStore</code>, <code>_txManager</code>, <code>_logWriter</code>, <code>_vacuumEngine</code>, <code>_backupEngine</code>) are declared <code>= null!</code> at the field-initializer and never assigned anywhere, including inside the constructor.','<code>OpenCollection&lt;T,TKey&gt;(name, options)</code> throws <code>NotImplementedException</code> immediately.','<code>Dispose()</code> is an empty no-op.'],
+    gotcha:'Every dependency Database is supposed to compose (SchemaStore, TransactionManager, LogWriter, VacuumEngine, BackupEngine, OperationContextFactory) is declared as a null!-initialized field and never constructed — the composition root does not actually compose anything yet.'},
+  {id:'collection', x:353, y:290, w:287, h:95, role:'gate', status:'stub', k:'public api', t:'Collection&lt;T, TKey&gt;',
+    m:['sealed · constructor + Name property only','zero CRUD methods — no Insert/Get/Update/Delete'],
+    file:'src/SharpDB.V2/Collection.cs',
+    body:['The internal constructor accepts the full intended dependency set — <code>IUniqueIndex&lt;TKey&gt;</code>, secondary <code>IDuplicateIndex&lt;TKey&gt;</code> list, <code>ISerializer&lt;T&gt;</code>, <code>IKeyExtractor&lt;T,TKey&gt;</code>, <code>IConstraintValidator&lt;T&gt;</code>, <code>IAutoIncrementStore</code>, <code>OperationContextFactory</code> — but the constructor body is empty and none of them are stored as fields.','The only member besides the constructor is <code>public string Name {{ get; }} = "";</code> — it does not even read the <code>name</code> parameter passed to the constructor.'],
+    gotcha:'Collection<T,TKey> has no Insert, Get, Update, Delete, or query method of any kind — the primary data-access surface described everywhere else in this diagram does not exist as callable code yet.'},
+  {id:'dboptions', x:656, y:290, w:287, h:82, role:'config', status:'real', k:'config · real', t:'DatabaseOptions',
+    m:['DataFilePath · WalFilePath','BufferPoolCapacity = 1024 · Port = 5432'],
+    file:'src/SharpDB.V2/DatabaseOptions.cs',
+    body:['Genuinely complete init-only DTO: <code>DataFilePath</code>, <code>WalFilePath</code>, <code>BufferPoolCapacity</code> (default 1024), <code>Port</code> (default 5432). No behavior to stub — this one is exactly what it claims to be.']},
+  {id:'coloptions', x:959, y:290, w:287, h:95, role:'config', status:'real', k:'config · real', t:'CollectionOptions&lt;T,TKey&gt;',
+    m:['KeySelector · AutoIncrement · PartitionCount = 1','PartitionStrategy?'],
+    file:'src/SharpDB.V2/CollectionOptions.cs',
+    body:['Genuinely complete init-only DTO: <code>Func&lt;T,TKey&gt;? KeySelector</code>, <code>bool AutoIncrement</code>, <code>int PartitionCount</code> (default 1), <code>IPartitionStrategy&lt;TKey&gt;? PartitionStrategy</code>. No behavior to stub.']},
+  {id:'opctxfactory', x:1262, y:290, w:287, h:70, role:'gate', status:'stub', k:'engine bridge', t:'OperationContextFactory',
+    m:['completely empty class — zero members'],
+    file:'src/SharpDB.V2.Engine/Operations/OperationContextFactory.cs',
+    body:['The entire file is <code>public sealed class OperationContextFactory {{ }}</code> — no constructor, no method, nothing. It cannot construct an <code>IOperationContext</code> because it has no members at all.'],
+    gotcha:'OperationContextFactory has no members at all — nothing in the codebase can actually create an IOperationContext instance through it today.'},
+
+  {id:'btree', x:50, y:452, w:350, h:126, role:'mod', status:'noop', k:'index', t:'B+Tree Index',
+    m:['UniqueIndex.TryGet() always returns false','Insert/Upsert/Delete are silent no-ops','BTreeNode/BTreePage/BTreeSplitPolicy are empty classes'],
+    file:'src/SharpDB.V2.Engine/BTree/*.cs',
+    body:['<code>UniqueIndex&lt;TKey&gt;.TryGet(key, out value, ctx)</code> always sets <code>value = default</code> and returns <code>false</code> — a lookup can never succeed, silently.','<code>Insert</code>, <code>Upsert</code>, <code>Delete</code> on both <code>UniqueIndex&lt;TKey&gt;</code> and <code>DuplicateIndex&lt;TKey&gt;</code> are empty method bodies — a write is accepted and immediately discarded, no exception.','<code>IndexCursor&lt;TKey,TValue&gt;.MoveNext/MovePrev/CurrentKey/CurrentValue</code> throw; <code>SeekTo*</code> are no-ops.','<code>BTreeNode</code>, <code>BTreePage</code>, <code>BTreeSplitPolicy</code> are all empty classes with zero members — no node layout, no split logic exists.'],
+    gotcha:'UniqueIndex.TryGet always returns false and Insert/Upsert are silent no-ops — a caller can "insert" a key and then "look it up" and both operations will appear to succeed/fail normally with no error, while nothing was ever stored.'},
+  {id:'wal', x:433, y:452, w:350, h:126, role:'mod', status:'stub', k:'durability', t:'WAL',
+    m:['LogWriter.Append/AppendAsync => throw','ForceSync/ScheduleGroupCommit are no-ops','GroupCommitQueue/LogRecord/LogSegment are empty classes'],
+    file:'src/SharpDB.V2.Engine/Wal/*.cs',
+    body:['<code>LogWriter.CurrentLsn</code>, <code>Append</code>, and <code>AppendAsync</code> all throw <code>NotImplementedException</code>; <code>ForceSync</code> and <code>ScheduleGroupCommit</code> are empty no-ops.','<code>RecoveryManager.Recover</code> and <code>FindCheckpoint</code> throw; <code>Checkpoint</code> is a no-op.','<code>GroupCommitQueue</code>, <code>LogRecord</code>, <code>LogSegment</code> are all empty classes with zero members — no record framing, no batching, no file rotation exists despite the names implying all three.'],
+    gotcha:'GroupCommitQueue, LogRecord, and LogSegment are empty classes — there is no log record format defined anywhere, so even if Append stopped throwing there would be nothing to serialize a record into.'},
+  {id:'txn', x:816, y:452, w:350, h:126, role:'mod', status:'noop', k:'concurrency', t:'Transactions + MVCC',
+    m:['Transaction.Commit()/Rollback() are silent no-ops','LockManager.DetectDeadlock always returns false','VersionManager.TryReadVersion always returns false'],
+    file:'src/SharpDB.V2.Engine/Transactions/*.cs',
+    body:['<code>TransactionManager.Begin/GetActive/GetActiveTransactions</code> all throw.','<code>Transaction.Id</code> and <code>Status</code> throw, but <code>Commit()</code>, <code>Rollback()</code>, and <code>Dispose()</code> are silent no-ops — a transaction handle can be committed or rolled back with zero effect and zero error.','<code>LockManager.TryAcquire</code> throws; <code>Release</code> is a no-op; <code>DetectDeadlock(tx, out victim)</code> always sets <code>victim = default!</code> and returns <code>false</code> — deadlock detection is permanently disabled, not merely unimplemented.','<code>VersionManager.TryReadVersion(page, readerId, out data)</code> always sets <code>data = default</code> and returns <code>false</code>; <code>WriteVersion</code>/<code>Purge</code> are no-ops — MVCC visibility is unconditionally negative.','<code>LockTable</code>, <code>DeadlockDetector</code>, <code>VersionChain</code> are all empty classes.'],
+    gotcha:'Transaction.Commit()/Rollback() are silent no-ops and LockManager.DetectDeadlock always returns false — a real deadlock could occur with detection permanently disabled, and a caller committing a transaction gets no signal that nothing was actually committed.'},
+  {id:'storage', x:1199, y:452, w:350, h:126, role:'mod', status:'stub', k:'buffer pool', t:'Storage + Pages',
+    m:['Page.Data / GetWritableData() => throw','PageBuffer.Get/Allocate => throw','PageAllocator is an empty class'],
+    file:'src/SharpDB.V2.Engine/Storage/*.cs',
+    body:['<code>Page.Id</code>, <code>Data</code>, <code>IsDirty</code>, and <code>GetWritableData()</code> all throw <code>NotImplementedException</code> — there is no way to read or write a page\'s bytes at all; <code>MarkDirty()</code> is a no-op.','<code>PageBuffer.Get</code>/<code>Allocate</code> throw; <code>Pin</code>/<code>Unpin</code>/<code>FlushDirty</code> are no-ops.','<code>PageStore.PageCount</code>/<code>OpenBuffer</code> throw; <code>Sync</code> is a no-op.','<code>PageAllocator</code> is an empty class — zero members.'],
+    gotcha:'Page.Data and GetWritableData() both throw unconditionally — every other Storage member is either a throw or a no-op, so no byte of page data can be produced, read, or persisted through this module today.'},
+
+  {id:'schema', x:50, y:634, w:350, h:126, role:'mod', status:'noop', k:'catalog', t:'Schema',
+    m:['SchemaStore.Save/Delete are silent no-ops','TryLoad/Exists => throw','CollectionSchema / IndexDefinition are real DTOs'],
+    file:'src/SharpDB.V2.Engine/Schema/*.cs',
+    body:['<code>SchemaStore.TryLoad</code> and <code>Exists</code> throw <code>NotImplementedException</code>; <code>Save</code> and <code>Delete</code> are empty no-ops — a schema can be "saved" or "deleted" without persisting or erroring.','<code>AutoIncrementStore.NextValue</code>/<code>Peek</code> throw; <code>Reset</code> is a no-op.','<code>CollectionSchema</code> (<code>Name</code>, <code>PrimaryIndexRootPageId</code>, <code>SecondaryIndexDefinitions</code>) and <code>IndexDefinition</code> (<code>Name</code>, <code>FieldPath</code>, <code>IsUnique</code>, <code>Ascending</code>) are genuinely complete DTOs.'],
+    gotcha:'SchemaStore.Save is a silent no-op — calling it never persists anything and gives no indication that nothing happened, while Exists/TryLoad throw instead, an inconsistent failure mode between the write and read sides of the same store.'},
+  {id:'serialization', x:433, y:634, w:350, h:126, role:'mod', status:'noop', k:'encoding', t:'Serialization',
+    m:['BinarySerializer<T>.Serialize writes zero bytes','Deserialize/EstimateSize => throw','CompiledSerializerFactory is an empty class'],
+    file:'src/SharpDB.V2.Engine/Serialization/*.cs',
+    body:['<code>BinarySerializer&lt;T&gt;.Serialize(value, writer)</code> is an empty method body — it never calls <code>writer.Advance</code> or writes any byte, so it "succeeds" while producing zero output.','<code>Deserialize</code> and <code>EstimateSize</code> both throw <code>NotImplementedException</code>.','<code>KeyExtractor&lt;T,TKey&gt;.ExtractKey</code> and <code>CompareKeys</code> both throw.','<code>CompiledSerializerFactory</code> is a completely empty static class, despite the name implying expression-tree-compiled per-type serializers.'],
+    gotcha:'Serialize silently writes nothing instead of throwing, while Deserialize throws — round-tripping a value through this serializer fails loudly on read but gives no signal at all on write, which is the more dangerous half of the pair.'},
+  {id:'partitioning', x:816, y:634, w:350, h:126, role:'mod', status:'real', k:'sharding · real', t:'Partitioning',
+    m:['HashPartitionStrategy.GetPartition — real, correct','PartitionRouter.Route — real, correct','the only working module in the codebase'],
+    file:'src/SharpDB.V2.Engine/Partitioning/*.cs',
+    body:['<code>HashPartitionStrategy&lt;TKey&gt;.GetPartition(key, partitionCount)</code> validates <code>partitionCount &gt; 0</code> (throws <code>ArgumentOutOfRangeException</code> otherwise) and computes <code>(key?.GetHashCode() ?? 0 &amp; int.MaxValue) % partitionCount</code> — genuinely correct, working code.','<code>PartitionRouter&lt;TKey&gt;.Route(key)</code> calls the strategy and indexes into its <code>PartitionDescriptor</code> list — also correct.','<code>PartitionDescriptor</code> is a plain <code>readonly record struct(int Id, string Name)</code>.','This is the only module in the entire SharpDB.V2 source tree with real, verified, working behavior — everything else with logic is a stub or a silent no-op.'] },
+  {id:'primitives', x:1199, y:634, w:350, h:126, role:'mod', status:'noop', k:'low-level', t:'Primitives',
+    m:['LockFreeRingBuffer.TryWrite/TryRead always return false','ObjectPool<T> is an empty class','CacheLinePadded<T> is real, correct layout'],
+    file:'src/SharpDB.V2.Engine/Primitives/*.cs',
+    body:['<code>LockFreeRingBuffer</code> carries a doc comment describing a "many-to-one lock-free variable-length ring buffer" with "cache-line padded head/tail" — but <code>TryWrite</code> always returns <code>false</code> and <code>TryRead</code> always sets <code>bytesRead = 0</code> and returns <code>false</code>. The comment describes design intent, not what the code does.','<code>PinnedBuffer</code> exposes <code>Length</code>/<code>Pointer</code> as get-only auto-properties that are never assigned by anything; <code>PinnedBufferPool.Rent()</code> throws, <code>Return</code> is a no-op.','<code>ObjectPool&lt;T&gt;</code> is a completely empty class despite the <code>IPoolable</code> interface existing alongside it.','<code>CacheLinePadded&lt;T&gt;</code> is genuinely correct: <code>[StructLayout(LayoutKind.Explicit, Size=128)]</code> with <code>[FieldOffset(64)] public T Value</code> — real, working cache-line padding.'],
+    gotcha:'LockFreeRingBuffer\'s doc comment claims lock-free MPSC behavior with cache-line-padded head/tail, but TryWrite/TryRead unconditionally return false — a caller checking the boolean result sees a plausible "buffer full" signal, not "not implemented".'},
+
+  {id:'constraints', x:50, y:776, w:350, h:116, role:'mod', status:'noop', k:'validation', t:'Constraints',
+    m:['CompositeConstraintValidator — all 3 methods no-op','ForeignKeyValidator — all 3 methods no-op','every insert/update/delete passes unconditionally'],
+    file:'src/SharpDB.V2.Engine/Constraints/*.cs',
+    body:['<code>CompositeConstraintValidator&lt;T&gt;</code> and <code>ForeignKeyValidator&lt;T&gt;</code> both implement <code>IConstraintValidator&lt;T&gt;</code>, and on both classes <code>ValidateInsert</code>, <code>ValidateUpdate</code>, <code>ValidateDelete</code> are empty method bodies.'],
+    gotcha:'Both constraint validators accept every insert, update, and delete unconditionally — no foreign-key or composite rule is enforced today, and nothing about calling Validate* signals that.'},
+  {id:'operations', x:433, y:776, w:350, h:116, role:'mod', status:'stub', k:'context', t:'Operations',
+    m:['OperationContext.Id/Transaction/PageBuffer/IsReadOnly => throw','only Dispose() is a no-op'],
+    file:'src/SharpDB.V2.Engine/Operations/OperationContext.cs',
+    body:['<code>OperationContext</code> implements <code>IOperationContext</code> — <code>Id</code>, <code>Transaction</code>, <code>PageBuffer</code>, and <code>IsReadOnly</code> all throw <code>NotImplementedException</code>; only <code>Dispose()</code> is a no-op.','Paired with <code>OperationContextFactory</code> (see Public API zone), which has no members at all — nothing constructs an <code>OperationContext</code> today.'],
+    gotcha:'Every readable property on OperationContext throws — even if something managed to construct one, none of its state could actually be read.'},
+  {id:'vacuum', x:816, y:776, w:733, h:116, role:'mod', status:'stub', k:'maintenance', t:'Vacuum + Backup',
+    m:['VacuumEngine.Run/EstimateReclaimable => throw','BackupEngine.Create => throw','VacuumResult / BackupManifest are real DTOs'],
+    file:'src/SharpDB.V2.Engine/{Vacuum,Backup}/*.cs',
+    body:['<code>VacuumEngine.Run(collectionName, ctx)</code> and <code>EstimateReclaimable(collectionName)</code> both throw <code>NotImplementedException</code>.','<code>BackupEngine.Create(destinationPath, ctx)</code> throws <code>NotImplementedException</code>.','<code>VacuumResult</code> (<code>PagesReclaimed</code>, <code>BytesFreed</code>) and <code>BackupManifest</code> (<code>SourcePath</code>, <code>CreatedAt</code>, <code>TotalPages</code>, <code>ConsistentLsn</code>) are genuinely complete result DTOs — the shapes are designed even though nothing produces them yet.']},
+
+  {id:'filepagestore', x:300, y:974, w:230, h:81, role:'impl', status:'stub', k:'impl', t:'FilePageStore',
+    m:['ctor(path) stores nothing · OpenBuffer/PageCount => throw'],
+    file:'src/SharpDB.V2.Infrastructure/IO/FilePageStore.cs',
+    body:['<code>FilePageStore(string path)</code> takes a path but the constructor body is empty. <code>OpenBuffer</code> and <code>PageCount</code> throw; <code>Sync</code> is a no-op.']},
+  {id:'nulllogger', x:550, y:974, w:170, h:95, role:'impl', status:'stub', k:'impl', t:'NullLogger',
+    m:['empty class · implements no logging interface'],
+    file:'src/SharpDB.V2.Infrastructure/Logging/NullLogger.cs',
+    body:['<code>public sealed class NullLogger {{ }}</code> — completely empty, and does not implement any <code>ILogger</code>-style interface, because none exists in the codebase yet. Nothing anywhere currently logs anything.']},
+  {id:'sysclock', x:740, y:974, w:170, h:81, role:'impl', status:'real', k:'impl · real', t:'SystemClock',
+    m:['ISystemClock.UtcNow => DateTimeOffset.UtcNow'],
+    file:'src/SharpDB.V2.Infrastructure/Time/SystemClock.cs',
+    body:['<code>public DateTimeOffset UtcNow =&gt; DateTimeOffset.UtcNow;</code> — genuinely implements <code>ISystemClock</code>. Along with Partitioning, this is the only other fully real, working code in the source tree.']},
+  {id:'filesystem', x:930, y:974, w:170, h:81, role:'impl', status:'stub', k:'util', t:'FileSystem',
+    m:['static class · zero members'],
+    file:'src/SharpDB.V2.Infrastructure/IO/FileSystem.cs',
+    body:['<code>public static class FileSystem {{ }}</code> — completely empty, zero members.']}
+];
+
+var EDGES = [
+  ['e-srv-sess','dbserver','session'],
+  ['e-sess-hdl','session','pghandlers'],
+  ['e-hdl-lex','pghandlers','lexerparser','SQL text'],
+  ['e-lex-plan','lexerparser','planner'],
+  ['e-plan-exec','planner','executor'],
+  ['e-exec-db','executor','database','never actually called',true,[[1432.5,227],[1432.5,258],[193.5,258],[193.5,290]]],
+  ['e-db-col','database','collection','OpenCollection<T,TKey>()'],
+  ['e-col-opctx','collection','opctxfactory'],
+  ['e-opctx-ops','opctxfactory','operations',null,false,[[1405.5,360],[1405.5,388],[800,388],[800,768],[608,768],[608,776]]],
+  ['e-ops-constraints','operations','constraints'],
+  ['e-ops-txn','operations','txn'],
+  ['e-ops-btree','operations','btree'],
+  ['e-ops-storage','operations','storage'],
+  ['e-txn-wal','txn','wal','commit -> append record',false,[[816,505],[783,505]]],
+  ['e-wal-txn','wal','txn','replay -> one tx per entry',false,[[783,525],[816,525]]],
+  ['e-wal-storage','wal','storage','redo replays into pages',false,[[608,578],[608,593],[1310,593],[1310,578]]],
+  ['e-btree-storage','btree','storage','index pages',false,[[225,578],[225,584],[1438,584],[1438,578]]],
+  ['e-storage-file','storage','filepagestore','page IO',false,[[1374,578],[1374,602],[800,602],[800,900],[415,900],[415,974]]],
+  ['e-storage-serialization','storage','serialization','page bytes <-> T',true,[[1374,578],[1374,620],[696,620],[696,634]]],
+  ['e-col-serialization','collection','serialization',null,true,[[496.5,385],[496.5,403],[416,403],[416,611],[520,611],[520,634]]],
+  ['e-col-schema','collection','schema','loads CollectionSchema',true],
+  ['e-col-partitioning','collection','partitioning','PartitionCount > 1'],
+  ['e-coloptions-partitioning','coloptions','partitioning','PartitionStrategy?'],
+  ['e-db-schema','database','schema'],
+  ['e-db-wal','database','wal'],
+  ['e-db-txn','database','txn',null,false,[[193.5,399],[193.5,403],[991,403],[991,452]]],
+  ['e-db-vacuum','database','vacuum',null,false,[[193.5,399],[193.5,403],[1182.5,403],[1182.5,776]]],
+  ['e-db-opctxfactory','database','opctxfactory','ctor body is empty',true,[[193.5,399],[193.5,403],[1405.5,403],[1405.5,360]]],
+  ['e-vacuum-storage','vacuum','storage',null,false,null,1350],
+  ['e-vacuum-wal','vacuum','wal','consistent LSN',false,null,950],
+  ['e-vacuum-txn','vacuum','txn','oldest active tx',false,null,1150],
+  ['e-sysclock-txn','sysclock','txn','timestamps',true,[[825,974],[825,908],[800,908],[800,629],[991,629],[991,578]]],
+  ['e-filesystem-filepagestore','filesystem','filepagestore',null,true,[[1015,1055],[1015,1078],[415,1078],[415,1055]]],
+  ['e-nulllogger-database','nulllogger','database','logging seam',true,[[635,974],[635,908],[416,908],[416,403],[193.5,403],[193.5,399]]],
+  ['e-primitives-wal','primitives','wal','ring buffer for group commit',true]
+];
+
+var FLOWS = {
+  write: {
+    name: 'Write Path — Insert / Update',
+    statusNote: 'intended — Collection<T,TKey> has no Insert/Update method to call any of this from today',
+    nodes: ['database','collection','opctxfactory','operations','constraints','txn','wal','btree','storage','serialization','filepagestore'],
+    edges: ['e-db-col','e-col-opctx','e-col-serialization','e-opctx-ops','e-ops-constraints','e-ops-txn','e-txn-wal','e-wal-storage','e-ops-btree','e-btree-storage','e-storage-file'],
+    steps: ['<code>Collection.InsertAsync</code> would enter through <code>Database.OpenCollection</code> and <code>Collection</code> — neither exists as callable code yet','<code>OperationContextFactory</code> would create a scoped transaction + page-buffer context — but the factory has no members to do so','<code>CompositeConstraintValidator</code>/<code>ForeignKeyValidator</code> would run first — both currently accept anything unconditionally','<code>LockManager.TryAcquire</code> would protect the mutation — currently throws','<code>LogWriter.Append</code> would record the change before the page mutation — currently throws','<code>UniqueIndex.Upsert</code> would update the B+Tree — currently a silent no-op, so even a "successful" write stores nothing','Commit would flush through <code>FilePageStore</code> — <code>Transaction.Commit()</code> is itself a no-op today']
+  },
+  read: {
+    name: 'Read Path — Point Lookup',
+    statusNote: 'intended — same missing Collection<T,TKey> entry point as the write path',
+    nodes: ['database','collection','opctxfactory','operations','txn','btree','storage','serialization','filepagestore'],
+    edges: ['e-db-col','e-col-opctx','e-col-serialization','e-opctx-ops','e-ops-txn','e-ops-btree','e-btree-storage','e-storage-file','e-storage-serialization'],
+    steps: ['<code>Collection.GetAsync(key)</code> would enter via <code>Database</code> and <code>Collection</code> — neither has a method for this yet','<code>OperationContext</code> would capture a read-only snapshot timestamp — every member of <code>OperationContext</code> throws today','<code>UniqueIndex.TryGet(key, out pageId, ctx)</code> would seek the B+Tree — it always returns <code>false</code> regardless of what was inserted','<code>VersionManager.TryReadVersion</code> would check MVCC visibility — it always returns <code>false</code> too, an unconditionally negative read path','<code>PageBuffer.Get(pageId)</code> would serve the page — throws; <code>BinarySerializer.Deserialize</code> would decode it — also throws']
+  },
+  recovery: {
+    name: 'WAL Recovery — Startup',
+    statusNote: 'intended — RecoveryManager.Recover and LogWriter.Append both throw unconditionally',
+    nodes: ['database','wal','storage','filepagestore','txn'],
+    edges: ['e-db-wal','e-wal-storage','e-storage-file','e-wal-txn','e-db-txn'],
+    steps: ['On startup, <code>Database</code> would hand its <code>LogWriter</code> and page store to <code>RecoveryManager.Recover</code> — the method throws <code>NotImplementedException</code> immediately','Analysis/Redo/Undo phases described in the design docs have no corresponding code — <code>LogRecord</code> and <code>LogSegment</code> are empty classes, so there is no record format to even parse','<code>RecoveryManager.FindCheckpoint</code> also throws, and <code>Checkpoint(...)</code> is a no-op, so no checkpoint is ever written or found either']
+  },
+  pgquery: {
+    name: 'PostgreSQL Wire Protocol — Query',
+    statusNote: 'intended — every hop in this chain is a stub; no byte is ever read off the socket',
+    nodes: ['dbserver','session','pghandlers','lexerparser','planner','executor','database','collection','opctxfactory','operations','btree'],
+    edges: ['e-srv-sess','e-sess-hdl','e-hdl-lex','e-lex-plan','e-plan-exec','e-exec-db','e-db-col','e-col-opctx','e-opctx-ops','e-ops-btree'],
+    steps: ['A TCP client would connect and <code>ClientSession.RunAsync</code> would loop reading messages — it returns <code>Task.CompletedTask</code> immediately instead','<code>PgStartupHandler.HandleAsync</code> would negotiate the protocol version and send AuthOK — it also just returns <code>Task.CompletedTask</code>','A <code>Q</code> query message would reach <code>PgSimpleQueryHandler</code>, then <code>Lexer.Tokenize</code> and <code>Parser.Parse</code> — both throw on any input','<code>QueryPlanner.Plan</code> and <code>QueryExecutor.Execute</code> would continue the chain — both throw, and <code>QueryExecutor</code> does not reference the Engine at all, so this path could not reach <code>Database</code>/<code>Collection</code> even if the earlier stages worked']
+  },
+  partition: {
+    name: 'Partition Routing — real, working code today',
+    statusNote: 'real — HashPartitionStrategy and PartitionRouter are verified correct',
+    nodes: ['collection','coloptions','partitioning'],
+    edges: ['e-col-partitioning','e-coloptions-partitioning'],
+    steps: ['<code>CollectionOptions&lt;T,TKey&gt;.PartitionCount</code> and an optional <code>PartitionStrategy</code> configure how a collection would be sharded','<code>HashPartitionStrategy&lt;TKey&gt;.GetPartition(key, partitionCount)</code> validates <code>partitionCount &gt; 0</code> and computes <code>(key.GetHashCode() &amp; int.MaxValue) % partitionCount</code> — this line of code is correct and would work if wired up','<code>PartitionRouter&lt;TKey&gt;.Route(key)</code> calls the strategy and indexes into the partition list — also correct. This is the one flow on this entire page that is not aspirational.']
+  },
+  constraints: {
+    name: 'Constraint Validation — FK check',
+    statusNote: 'wired, but every validator is a no-op today',
+    nodes: ['collection','opctxfactory','operations','constraints'],
+    edges: ['e-col-opctx','e-opctx-ops','e-ops-constraints'],
+    steps: ['<code>Collection&lt;T,TKey&gt;</code> is constructed with an <code>IConstraintValidator&lt;T&gt;</code> — commonly a <code>CompositeConstraintValidator&lt;T&gt;</code> chaining a <code>ForeignKeyValidator&lt;T&gt;</code>','On any mutation, <code>ValidateInsert</code>/<code>ValidateUpdate</code>/<code>ValidateDelete</code> would run before the write is applied','Every one of those six methods (three on each validator class) is an empty method body — every value is accepted, so no foreign-key or composite rule is enforced regardless of what is configured']
+  },
+  vacuum: {
+    name: 'Vacuum + Backup Maintenance',
+    statusNote: 'intended — VacuumEngine.Run and BackupEngine.Create both throw unconditionally',
+    nodes: ['database','vacuum','storage','wal','txn'],
+    edges: ['e-db-vacuum','e-vacuum-storage','e-vacuum-wal','e-vacuum-txn'],
+    steps: ['<code>Database</code> holds a <code>VacuumEngine</code> and <code>BackupEngine</code> field — both are <code>= null!</code> and never constructed in the (empty) <code>Database</code> constructor','<code>VacuumEngine.Run(collectionName, ctx)</code> would reclaim dead pages relative to the oldest active transaction — throws <code>NotImplementedException</code>','<code>BackupEngine.Create(destinationPath, ctx)</code> would flush pages and checkpoint the WAL for a consistent snapshot — also throws; <code>VacuumResult</code>/<code>BackupManifest</code> exist as DTOs but nothing ever populates one']
+  },
+  bootstrap: {
+    name: 'Bootstrap — Database construction',
+    statusNote: 'intended — the composition root does not actually compose anything yet',
+    nodes: ['database','dboptions','schema','wal','txn','vacuum','opctxfactory','filepagestore','sysclock','nulllogger','filesystem'],
+    edges: ['e-db-schema','e-db-wal','e-db-txn','e-db-vacuum','e-db-opctxfactory','e-sysclock-txn','e-filesystem-filepagestore','e-nulllogger-database'],
+    steps: ['<code>new Database(options)</code> is called with a real, fully-populated <code>DatabaseOptions</code> — <code>DataFilePath</code>, <code>WalFilePath</code>, <code>BufferPoolCapacity</code>, <code>Port</code>','Inside, Database is <em>supposed</em> to construct its <code>SchemaStore</code>, <code>TransactionManager</code>, <code>LogWriter</code>, <code>VacuumEngine</code>, <code>BackupEngine</code>, and <code>OperationContextFactory</code> — but the constructor body is literally empty, so all seven dependency fields stay at their <code>null!</code> field-initializer value','<code>SystemClock</code> and, if wired in, <code>NullLogger</code> and <code>FileSystem</code>/<code>FilePageStore</code> are the only pieces on this path that are either genuinely real (<code>SystemClock</code>) or at least safely inert (<code>NullLogger</code>) rather than silently wrong']
+  }
+};
+
+// ---------------------------------------------------------------------------
+// RENDER
+// ---------------------------------------------------------------------------
+var SVGNS = 'http://www.w3.org/2000/svg';
+function el(tag, attrs, parent) {
+  var e = document.createElementNS(SVGNS, tag);
+  for (var k in attrs) e.setAttribute(k, attrs[k]);
+  if (parent) parent.appendChild(e);
+  return e;
+}
+function textLines(x, y, lines, cls, lh) {
+  var g = document.createDocumentFragment();
+  lines.forEach(function (line, i) {
+    var t = el('text', {x: x, y: y + i * lh, class: cls}, null);
+    t.textContent = line;
+    g.appendChild(t);
+  });
+  return g;
+}
+
+var byId = {};
+NODES.forEach(function (n) { byId[n.id] = n; });
+
+var zonesLayer = document.getElementById('zonesLayer');
+var edgesLayer = document.getElementById('edgesLayer');
+var labelsLayer = document.getElementById('labelsLayer');
+var nodesLayer = document.getElementById('nodesLayer');
+
+var measureEl = el('text', {class: 'measure', x: -9999, y: -9999}, nodesLayer);
+function measureWidth(text) {
+  measureEl.textContent = text;
+  return measureEl.getComputedTextLength();
+}
+// Greedy word-wrap using real measured text width (not an estimate) so a
+// meta line that is too wide for its box splits into as many lines as it
+// actually needs, instead of silently overflowing past the box edge.
+// Tokens end at a space OR right after a '/', so slash-joined technical
+// lists like "ScanPlan/FilterPlan/JoinPlan" can still wrap even though
+// they contain no spaces at all. Each token keeps its trailing delimiter,
+// so re-joining tokens needs no extra separator.
+function tokenize(text) {
+  var tokens = [], cur = '';
+  for (var i = 0; i < text.length; i++) {
+    cur += text[i];
+    if (text[i] === ' ' || text[i] === '/') { tokens.push(cur); cur = ''; }
+  }
+  if (cur) tokens.push(cur);
+  return tokens;
+}
+function wrapLine(text, maxWidth) {
+  var tokens = tokenize(text);
+  var lines = [], cur = '';
+  tokens.forEach(function (tok) {
+    var test = cur + tok;
+    if (cur && measureWidth(test) > maxWidth) {
+      lines.push(cur.trim());
+      cur = tok;
+    } else {
+      cur = test;
+    }
+  });
+  if (cur) lines.push(cur.trim());
+  return lines;
+}
+
+ZONES.forEach(function (z) {
+  var g = el('g', {class: 'zone', id: 'z-' + z.id}, zonesLayer);
+  el('rect', {x: z.x, y: z.y, width: z.w, height: z.h, rx: 14}, g);
+  var ttl = el('text', {class: 'ztitle', x: z.x + 20, y: z.y + 24}, g);
+  ttl.textContent = z.t;
+  var sub = el('text', {class: 'zsub', x: z.x + 20, y: z.y + 40}, g);
+  sub.textContent = z.s;
+});
+
+// sxOverride lets several edges fanning out of the SAME wide source node
+// (e.g. vacuum -> storage/wal/txn) exit from different points along its
+// top/bottom edge instead of all collapsing onto its exact center.
+function anchorPoints(a, b, sxOverride) {
+  var acx = sxOverride != null ? sxOverride : a.x + a.w / 2, acy = a.y + a.h / 2;
+  var bcx = b.x + b.w / 2, bcy = b.y + b.h / 2;
+  var dx = bcx - acx, dy = bcy - acy;
+  var sx, sy, ex, ey, c1x, c1y, c2x, c2y;
+  if (Math.abs(dx) >= Math.abs(dy)) {
+    if (dx >= 0) { sx = a.x + a.w; ex = b.x; } else { sx = a.x; ex = b.x + b.w; }
+    sy = acy; ey = bcy;
+    var bend = Math.min(80, Math.abs(dx) * 0.4) * (dx >= 0 ? 1 : -1);
+    c1x = sx + bend; c1y = sy;
+    c2x = ex - bend; c2y = ey;
+  } else {
+    if (dy >= 0) { sy = a.y + a.h; ey = b.y; } else { sy = a.y; ey = b.y + b.h; }
+    sx = acx; ex = bcx;
+    var bendv = Math.min(70, Math.abs(dy) * 0.4) * (dy >= 0 ? 1 : -1);
+    c1x = sx; c1y = sy + bendv;
+    c2x = ex; c2y = ey - bendv;
+  }
+  return {sx: sx, sy: sy, c1x: c1x, c1y: c1y, c2x: c2x, c2y: c2y, ex: ex, ey: ey};
+}
+
+function longestSegmentMid(pts) {
+  var best = -1, mx = 0, my = 0;
+  for (var i = 0; i < pts.length - 1; i++) {
+    var a = pts[i], b = pts[i + 1];
+    var len = Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]);
+    if (len > best) { best = len; mx = (a[0] + b[0]) / 2; my = (a[1] + b[1]) / 2; }
+  }
+  return {x: mx, y: my};
+}
+
+// Rounds every interior vertex of a polyline with a quadratic-bezier fillet.
+// The fillet only pulls IN toward the corner (never bulges past the original
+// straight segments), so a polyline already verified box-free stays box-free.
+function roundedPath(pts, r) {
+  if (pts.length < 3) {
+    return 'M ' + pts.map(function (p) { return p[0].toFixed(1) + ',' + p[1].toFixed(1); }).join(' L ');
+  }
+  var d = 'M ' + pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1);
+  for (var i = 1; i < pts.length - 1; i++) {
+    var prev = pts[i - 1], cur = pts[i], next = pts[i + 1];
+    var d1 = Math.hypot(cur[0] - prev[0], cur[1] - prev[1]);
+    var d2 = Math.hypot(next[0] - cur[0], next[1] - cur[1]);
+    var rr = Math.min(r, d1 / 2, d2 / 2);
+    var p1x = cur[0] + (prev[0] - cur[0]) * (rr / d1), p1y = cur[1] + (prev[1] - cur[1]) * (rr / d1);
+    var p2x = cur[0] + (next[0] - cur[0]) * (rr / d2), p2y = cur[1] + (next[1] - cur[1]) * (rr / d2);
+    d += ' L ' + p1x.toFixed(1) + ',' + p1y.toFixed(1);
+    d += ' Q ' + cur[0].toFixed(1) + ',' + cur[1].toFixed(1) + ' ' + p2x.toFixed(1) + ',' + p2y.toFixed(1);
+  }
+  var last = pts[pts.length - 1];
+  d += ' L ' + last[0].toFixed(1) + ',' + last[1].toFixed(1);
+  return d;
+}
+
+EDGES.forEach(function (e) {
+  var id = e[0], from = byId[e[1]], to = byId[e[2]], label = e[3], dashed = e[4], via = e[5], sxOverride = e[6];
+  if (!from || !to) return;
+  var d, labelPos;
+  if (via) {
+    d = roundedPath(via, 12);
+    labelPos = longestSegmentMid(via);
+  } else {
+    var p = anchorPoints(from, to, sxOverride);
+    d = 'M ' + p.sx.toFixed(1) + ',' + p.sy.toFixed(1) +
+        ' C ' + p.c1x.toFixed(1) + ',' + p.c1y.toFixed(1) + ' ' +
+        p.c2x.toFixed(1) + ',' + p.c2y.toFixed(1) + ' ' +
+        p.ex.toFixed(1) + ',' + p.ey.toFixed(1);
+    labelPos = {x: (p.sx + p.ex) / 2, y: (p.sy + p.ey) / 2};
+  }
+  el('path', {id: id, class: 'edge' + (dashed ? ' dash' : '') + (via ? ' routed' : ''), d: d}, edgesLayer);
+  if (label) {
+    // A background pill behind the label keeps it legible even where the
+    // midpoint of a short connection lands close to (or on) a node box.
+    var estW = measureWidth(label) * (8.8 / 9.6);
+    el('rect', {
+      class: 'elbl-bg', x: (labelPos.x - estW / 2 - 4).toFixed(1), y: (labelPos.y - 10).toFixed(1),
+      width: (estW + 8).toFixed(1), height: 13, rx: 3, 'data-e': id
+    }, labelsLayer);
+    var lbl = el('text', {
+      class: 'elbl', 'data-e': id, x: labelPos.x.toFixed(1), y: labelPos.y.toFixed(1), 'text-anchor': 'middle'
+    }, labelsLayer);
+    lbl.textContent = label;
+  }
+});
+
+NODES.forEach(function (n) {
+  var g = el('g', {class: 'node role-' + n.role, 'data-k': n.id, 'data-status': n.status}, nodesLayer);
+  var usableW = n.w - 28;
+  var wrapped = [];
+  n.m.forEach(function (line) { wrapped = wrapped.concat(wrapLine(line, usableW)); });
+  var neededH = 55 + (wrapped.length - 1) * 14 + 12;
+  var boxH = Math.max(n.h, neededH);
+  el('rect', {class: 'box', x: n.x, y: n.y, width: n.w, height: boxH, rx: 9}, g);
+  el('rect', {class: 'accent', x: n.x, y: n.y, width: 4, height: boxH, rx: 2}, g);
+  el('text', {class: 'k', x: n.x + 14, y: n.y + 17}, g).textContent = n.k;
+  el('text', {class: 't', x: n.x + 14, y: n.y + 36}, g).textContent = n.t.replace(/&lt;/g, '<').replace(/&gt;/g, '>');
+  g.appendChild(textLines(n.x + 14, n.y + 55, wrapped, 'm', 14));
+  if (n.status === 'stub' || n.status === 'noop') {
+    var bd = el('g', {class: 'riskbadge'}, g);
+    el('circle', {cx: n.x + n.w - 14, cy: n.y + 14, r: 9}, bd);
+    el('text', {x: n.x + n.w - 14, y: n.y + 18, 'text-anchor': 'middle'}, bd).textContent = n.status === 'stub' ? '!' : '?';
+  }
+  if (n.status === 'real') {
+    var vg = el('g', {class: 'verified'}, g);
+    el('rect', {x: n.x + n.w - 30, y: n.y + 6, width: 24, height: 14, rx: 3}, vg);
+    el('text', {x: n.x + n.w - 18, y: n.y + 16, 'text-anchor': 'middle'}, vg).textContent = 'OK';
+  }
+});
+
+// ---------------------------------------------------------------------------
+// INTERACTION — pan / zoom
+// ---------------------------------------------------------------------------
+var svg = document.getElementById('svg');
+var stage = document.getElementById('stage');
+var VB = {x: 0, y: 0, w: 1600, h: 1150};
+var VB0 = {x: 0, y: 0, w: 1600, h: 1150};
+function applyVB() { svg.setAttribute('viewBox', VB.x.toFixed(1) + ' ' + VB.y.toFixed(1) + ' ' + VB.w.toFixed(1) + ' ' + VB.h.toFixed(1)); }
+applyVB();
+
+function screenToSvg(clientX, clientY) {
+  var rect = stage.getBoundingClientRect();
+  var relX = (clientX - rect.left) / rect.width;
+  var relY = (clientY - rect.top) / rect.height;
+  return {x: VB.x + relX * VB.w, y: VB.y + relY * VB.h};
+}
+function zoomAt(factor, clientX, clientY) {
+  var p = screenToSvg(clientX, clientY);
+  var newW = Math.max(300, Math.min(3200, VB.w * factor));
+  var newH = newW * (VB0.h / VB0.w);
+  var fx = (p.x - VB.x) / VB.w, fy = (p.y - VB.y) / VB.h;
+  VB.x = p.x - fx * newW; VB.y = p.y - fy * newH;
+  VB.w = newW; VB.h = newH;
+  applyVB();
+}
+document.getElementById('zoomIn').addEventListener('click', function () {
+  var r = stage.getBoundingClientRect();
+  zoomAt(0.8, r.left + r.width / 2, r.top + r.height / 2);
+});
+document.getElementById('zoomOut').addEventListener('click', function () {
+  var r = stage.getBoundingClientRect();
+  zoomAt(1.25, r.left + r.width / 2, r.top + r.height / 2);
+});
+document.getElementById('zoomReset').addEventListener('click', function () {
+  VB = {x: VB0.x, y: VB0.y, w: VB0.w, h: VB0.h}; applyVB();
+});
+stage.addEventListener('wheel', function (ev) {
+  ev.preventDefault();
+  var factor = ev.deltaY > 0 ? 1.12 : 0.89;
+  zoomAt(factor, ev.clientX, ev.clientY);
+}, {passive: false});
+
+var dragging = false, dragStart = null, vbStart = null;
+stage.addEventListener('mousedown', function (ev) {
+  dragging = true; stage.classList.add('dragging');
+  dragStart = {x: ev.clientX, y: ev.clientY}; vbStart = {x: VB.x, y: VB.y};
+});
+window.addEventListener('mousemove', function (ev) {
+  if (!dragging) return;
+  var rect = stage.getBoundingClientRect();
+  var dxs = (ev.clientX - dragStart.x) / rect.width * VB.w;
+  var dys = (ev.clientY - dragStart.y) / rect.height * VB.h;
+  VB.x = vbStart.x - dxs; VB.y = vbStart.y - dys;
+  applyVB();
+});
+window.addEventListener('mouseup', function () { dragging = false; stage.classList.remove('dragging'); });
+
+// ---------------------------------------------------------------------------
+// INTERACTION — flows, detail, risk toggle, theme
+// ---------------------------------------------------------------------------
+var chips = document.querySelectorAll('.chip[data-flow]');
+var fcap = document.getElementById('flowcap');
+
+function setFlow(key) {
+  chips.forEach(function (c) { c.classList.toggle('on', c.dataset.flow === key); });
+  document.querySelectorAll('.edge').forEach(function (e) { e.classList.remove('lit'); });
+  document.querySelectorAll('.elbl').forEach(function (l) { l.classList.remove('lit'); });
+  document.querySelectorAll('.elbl-bg').forEach(function (l) { l.classList.remove('lit'); });
+  document.querySelectorAll('.node').forEach(function (n) { n.classList.remove('lit'); });
+  if (key === 'all') { svg.classList.remove('flowing'); fcap.classList.remove('show'); return; }
+  var f = FLOWS[key];
+  if (!f) return;
+  svg.classList.add('flowing');
+  f.edges.forEach(function (id) {
+    var e = document.getElementById(id);
+    if (e) e.classList.add('lit');
+  });
+  document.querySelectorAll('.elbl').forEach(function (l) {
+    if (f.edges.indexOf(l.dataset.e) !== -1) l.classList.add('lit');
+  });
+  document.querySelectorAll('.elbl-bg').forEach(function (l) {
+    if (f.edges.indexOf(l.dataset.e) !== -1) l.classList.add('lit');
+  });
+  f.nodes.forEach(function (k) {
+    var n = document.querySelector('.node[data-k="' + k + '"]');
+    if (n) n.classList.add('lit');
+  });
+  document.getElementById('f-name').textContent = f.name;
+  document.getElementById('f-status').textContent = f.statusNote;
+  document.getElementById('f-steps').innerHTML = f.steps.map(function (s) { return '<li>' + s + '</li>'; }).join('');
+  fcap.classList.add('show');
+}
+chips.forEach(function (c) { c.addEventListener('click', function () { setFlow(c.dataset.flow); }); });
+
+var riskChip = document.getElementById('riskChip');
+riskChip.addEventListener('click', function () {
+  var on = svg.classList.toggle('show-risk');
+  riskChip.classList.toggle('on', on);
+});
+
+document.querySelectorAll('.node').forEach(function (ng) {
+  ng.addEventListener('mousedown', function (ev) { ev.stopPropagation(); });
+  ng.addEventListener('click', function () {
+    document.querySelectorAll('.node').forEach(function (x) { x.classList.remove('sel'); });
+    ng.classList.add('sel');
+    var n = byId[ng.dataset.k];
+    if (!n) return;
+    document.getElementById('d-title').innerHTML = n.t;
+    var kickEl = document.querySelector('#detail .kick');
+    kickEl.textContent = n.k.toLowerCase();
+    document.querySelector('#detail .file').textContent = n.file;
+    document.getElementById('d-body').innerHTML = n.body.map(function (line) { return '<li>' + line + '</li>'; }).join('');
+    var old = document.querySelector('#detail .status-line');
+    if (old) old.remove();
+    if (n.status !== 'real' || n.gotcha) {
+      var s = document.createElement('div');
+      s.className = 'status-line ' + n.status;
+      var label = n.status === 'stub' ? 'Stub —' : n.status === 'noop' ? 'Silent no-op —' : 'Verified real —';
+      s.innerHTML = '<b>' + label + '</b> ' + (n.gotcha || 'Confirmed working as designed.');
+      document.getElementById('detail').appendChild(s);
+    }
+  });
+});
+
+document.getElementById('themeToggle').addEventListener('click', function () {
+  var dark = !document.documentElement.classList.contains('dark');
+  document.documentElement.classList.toggle('dark', dark);
+  document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  localStorage.setItem('theme', dark ? 'dark' : 'light');
+});
+</script>
+</body>
+</html>
